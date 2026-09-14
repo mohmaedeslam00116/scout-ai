@@ -141,7 +141,6 @@ export default function App() {
         );
         setMessages((prev) => [
           ...prev,
-          { role: 'user', text },
           { role: 'assistant', text: '', streaming: true, runIds: [runId] },
         ]);
         const answer = `(demo) Scout would research: “${text}” — wire the pi harness to see real answers with sources.`;

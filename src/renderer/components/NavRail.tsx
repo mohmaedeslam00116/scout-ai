@@ -19,31 +19,40 @@ export function NavRail({
   onNewConversation: () => void;
 }) {
   return (
-    <aside className="flex w-56 shrink-0 flex-col gap-4 border-r border-border bg-canvas p-3.5">
-      <div className="flex items-center gap-2 px-2 py-1 text-[15px] font-semibold">
-        <span className="text-accent">◈</span>
-        <span>Scout AI</span>
+    <aside className="flex w-52 shrink-0 flex-col gap-4 border-r border-line bg-canvas p-3">
+      <div className="flex items-center gap-2 px-2 py-1">
+        <span className="grid size-6 place-items-center rounded-full bg-ink text-[13px] leading-none text-canvas">
+          ◈
+        </span>
+        <span className="text-[15px] font-semibold tracking-tight text-ink">Scout AI</span>
       </div>
+
       <button
         onClick={onNewConversation}
-        className="rounded-lg bg-accent px-3 py-2 text-center text-sm font-medium text-white hover:bg-accent/90 active:bg-accent/80"
+        className="btn btn-primary w-full"
+        title="Start a new research conversation (Ctrl+N)"
       >
-        ＋ New conversation
+        New conversation
       </button>
-      <nav className="flex flex-col gap-0.5">
+
+      <nav className="flex flex-col gap-0.5" aria-label="Sections">
         {ITEMS.map(({ view, label }) => (
           <button
             key={view}
             onClick={() => onSelect(view)}
-            className={`rounded-lg px-2.5 py-2 text-left text-[13px] ${
-              active === view ? 'bg-accent-soft text-accent' : 'text-ink hover:bg-surface'
+            aria-current={active === view ? 'page' : undefined}
+            className={`rounded-full px-3 py-1.5 text-left text-[13px] transition-colors duration-150 ${
+              active === view
+                ? 'bg-surface-3 font-medium text-ink'
+                : 'text-ink-mid hover:bg-surface-2 hover:text-ink'
             }`}
           >
             {label}
           </button>
         ))}
       </nav>
-      <div className="mt-auto px-2 text-[11px] text-ink-dim">v0.1.0 — scaffold</div>
+
+      <div className="mt-auto px-2 text-[11px] text-ink-dim">v0.1.0</div>
     </aside>
   );
 }

@@ -1,6 +1,14 @@
 import { useState } from 'react';
 
-import { STATE_LABELS, STATE_STYLES, type FleetRun } from '../fleet.js';
+import { STATE_LABELS, type FleetRun, type RunState } from '../fleet.js';
+
+const STATE_BADGE: Record<RunState, string> = {
+  queued: 'badge-neutral',
+  running: 'badge-review',
+  done: 'badge-done',
+  stopped: 'badge-neutral',
+  error: 'badge-danger',
+};
 
 function RunCard({
   run,
@@ -18,27 +26,34 @@ function RunCard({
   const live = run.state === 'running' || run.state === 'queued';
 
   return (
-    <div className="rounded-xl border border-border bg-canvas">
+    <div className="card overflow-hidden">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left hover:bg-surface"
+        aria-expanded={open}
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-surface-3"
       >
-        <span className={`size-2 shrink-0 rounded-full ${run.state === 'running' ? 'animate-pulse bg-accent' : 'bg-surface-2'}`} />
+        <span className={`size-2 shrink-0 rounded-full ${run.state === 'running' ? 'live-dot' : 'bg-surface-3'}`} />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-medium text-ink">{run.agent}</span>
           <span className="block truncate text-[11px] text-ink-dim" title={run.task}>
             {run.task}
           </span>
         </span>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${STATE_STYLES[run.state]}`}>
-          {STATE_LABELS[run.state]}
-        </span>
+        <span className={`badge ${STATE_BADGE[run.state]}`}>{STATE_LABELS[run.state]}</span>
       </button>
 
       {open && (
-        <div className="border-t border-border px-3 py-2.5">
-          <div className="max-h-44 overflow-y-auto rounded-lg bg-surface px-2.5 py-2 font-mono text-[11px] leading-relaxed text-ink">
-            {run.transcript.length === 0 ? <div className="text-ink-dim">no output yet…</div> : run.transcript.map((line, i) => <div key={i}>{line}</div>)}
+        <div className="border-t border-line px-3 py-2.5">
+          <div className="well max-h-44 overflow-y-auto px-2.5 py-2" aria-live="polite">
+            {run.transcript.length === 0 ? (
+              <div className="text-ink-dim">no output yet…</div>
+            ) : (
+              run.transcript.map((line, i) => (
+                <div key={i} className="text-ink-mid">
+                  {line}
+                </div>
+              ))
+            )}
           </div>
 
           {live && (
@@ -53,21 +68,16 @@ function RunCard({
                   }
                 }}
                 placeholder="Steer this agent…"
-                className="min-w-0 flex-1 rounded-lg border border-border px-2 py-1.5 text-xs outline-none focus:border-accent"
+                aria-label="Steer agent"
+                className="min-w-0 flex-1 rounded-full border border-line bg-surface-2 px-3 py-1.5 text-xs text-ink placeholder:text-ink-dim outline-none transition-colors duration-150 focus:border-line-strong"
               />
-              <button
-                onClick={() => onStop(run.id)}
-                className="rounded-lg bg-danger-soft px-2.5 py-1.5 text-xs font-medium text-danger hover:bg-danger/10"
-              >
+              <button onClick={() => onStop(run.id)} className="btn btn-danger">
                 Stop
               </button>
             </div>
           )}
           {!live && (
-            <button
-              onClick={() => onOpenTranscript(run.id)}
-              className="mt-2 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-ink hover:bg-surface"
-            >
+            <button onClick={() => onOpenTranscript(run.id)} className="btn btn-ghost mt-2">
               Open full transcript
             </button>
           )}
@@ -92,18 +102,16 @@ export function FleetView({
 
   return (
     <section className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-canvas">
-      <header className="flex items-center justify-between border-b border-border px-4.5 py-2.5">
-        <h1 className="text-sm font-semibold">Fleet</h1>
-        {active > 0 && (
-          <span className="rounded-full bg-accent-soft px-2.5 py-0.5 text-[11px] font-semibold text-accent">
-            {active} active
-          </span>
-        )}
+      <header className="flex items-center justify-between border-b border-line px-5 py-2.5">
+        <h1 className="text-[15px] font-semibold tracking-tight text-ink">Fleet</h1>
+        {active > 0 && <span className="badge badge-review">{active} active</span>}
       </header>
       <div className="mx-auto w-full max-w-2xl p-4">
         {runs.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border bg-surface p-6 text-center text-sm text-ink-dim">
-            <div className="mb-1 text-2xl">⚡</div>
+          <div className="card p-6 text-center text-sm text-ink-dim">
+            <div className="mb-2 grid mx-auto size-10 place-items-center rounded-full border border-line-strong bg-surface-2 text-ink-mid">
+              ⚡
+            </div>
             No subagent runs yet. Scout delegates to researcher, evidence-auditor and reviewer
             children automatically when a task benefits from it.
           </div>

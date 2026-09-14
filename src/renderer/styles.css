@@ -1,23 +1,64 @@
 @import 'tailwindcss';
 
 /*
- * Scout AI design tokens — Antigravity-2.0-style light theme.
- * Tailwind v4 CSS-first config; components reference these via arbitrary values
- * or the @theme mappings below.
+ * Scout AI design system — dark, drenched-black, warm-tinted neutrals,
+ * bounded Scout-orange accent. Values and rules: /DESIGN.md.
+ * Tailwind v4 CSS-first config; utility classes map to these tokens.
  */
-@theme {
-  --color-canvas: #ffffff;
-  --color-surface: #f6f7f8;
-  --color-surface-2: #eef0f2;
-  --color-border: #e3e5e8;
-  --color-ink: #1a1c1e;
-  --color-ink-dim: #6b7075;
-  --color-accent: #1a73e8;
-  --color-accent-soft: #e8f0fe;
-  --color-danger: #c5221f;
-  --color-danger-soft: #fce8e6;
 
-  --radius-pane: 12px;
+/* Fallbacks for pre-OKLCH browsers (older Electron builds). */
+@supports not (color: oklch(50% 0.1 40)) {
+  :root {
+    --color-surface: #1d1c19;
+    --color-surface-2: #26241f;
+    --color-surface-3: #312f29;
+    --color-ink: #f2efe6;
+    --color-ink-mid: #b9b4a6;
+    --color-ink-dim: #918d81;
+    --color-accent: #e8541c;
+    --color-accent-bright: #f0764a;
+    --color-accent-soft: #3d2419;
+    --color-danger: #ec5f53;
+    --color-danger-soft: #3d211e;
+    --color-success: #6fbf85;
+    --color-success-soft: #1e3327;
+  }
+}
+
+@theme {
+  --color-canvas: #000000;
+  --color-surface: oklch(16% 0.006 60);
+  --color-surface-2: oklch(20% 0.007 60);
+  --color-surface-3: oklch(25% 0.008 60);
+  --color-ink: oklch(96% 0.005 85);
+  --color-ink-mid: oklch(80% 0.008 70);
+  --color-ink-dim: oklch(66% 0.008 70);
+  --color-line: rgb(255 255 255 / 8%);
+  --color-line-strong: rgb(255 255 255 / 14%);
+  --color-accent: oklch(66% 0.21 42);
+  --color-accent-bright: oklch(76% 0.17 45);
+  --color-accent-soft: oklch(27% 0.07 45);
+  --color-danger: oklch(68% 0.19 25);
+  --color-danger-soft: oklch(27% 0.07 25);
+  --color-success: oklch(75% 0.14 150);
+  --color-success-soft: oklch(28% 0.05 150);
+
+  --radius-card: 8px;
+  --radius-composer: 16px;
+  --radius-pill: 999px;
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root {
+  color-scheme: dark;
+  /* Semantic z-scale (DESIGN.md): dropdown → sticky → modal → toast → tooltip */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal-backdrop: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
 }
 
 html,
@@ -29,23 +70,271 @@ body,
 body {
   margin: 0;
   overflow: hidden;
-  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--color-ink);
   background: var(--color-canvas);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Thin, unobtrusive scrollbars like Antigravity's panes */
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
+}
+
+/* Focus is always visible, always orange, never eaten by Tailwind resets. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---- Hairline scrollbars ------------------------------------------------ */
+
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #d5d8dc;
+  background: rgb(255 255 255 / 10%);
   border-radius: 4px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #c0c4c9;
+  background: rgb(255 255 255 / 18%);
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---- Primitives --------------------------------------------------------- */
+
+/*
+ * Pill action. Variants:
+ *   btn-primary   — inverted: warm-white fill, black text (THE primary action)
+ *   btn-secondary — surface fill, ink text
+ *   btn-ghost     — transparent, hairline border
+ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0.4375rem 0.75rem;
+  min-height: 28px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 150ms var(--ease-out-quint),
+    color 150ms var(--ease-out-quint), border-color 150ms var(--ease-out-quint);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--color-ink);
+  color: var(--color-canvas);
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) {
+  background: oklch(88% 0.008 80);
+}
+
+.btn-secondary {
+  background: var(--color-surface-2);
+  color: var(--color-ink);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--color-surface-3);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-ink-mid);
+  border-color: var(--color-line-strong);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-surface-2);
+  color: var(--color-ink);
+}
+
+.btn-accent-ghost {
+  background: transparent;
+  color: var(--color-accent-bright);
+  border-color: oklch(66% 0.21 42 / 40%);
+}
+.btn-accent-ghost:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-bright);
+}
+
+.btn-danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  border-color: oklch(68% 0.19 25 / 30%);
+}
+.btn-danger:hover:not(:disabled) {
+  background: oklch(32% 0.09 25);
+}
+
+/* Icon-only round button (send / stop). */
+.btn-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 150ms var(--ease-out-quint),
+    transform 150ms var(--ease-out-quint), opacity 150ms var(--ease-out-quint);
+}
+.btn-icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.btn-icon:not(:disabled):active {
+  transform: scale(0.94);
+}
+.btn-icon-send {
+  background: var(--color-ink);
+  color: var(--color-canvas);
+}
+.btn-icon-send:hover:not(:disabled) {
+  background: oklch(88% 0.008 80);
+}
+.btn-icon-stop {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  border-color: oklch(68% 0.19 25 / 30%);
+}
+.btn-icon-stop:hover:not(:disabled) {
+  background: oklch(32% 0.09 25);
+}
+
+/* Status badges — full pill, soft fill, colored text. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: var(--radius-pill);
+  padding: 0.125rem 0.5rem;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.badge-review {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-bright);
+}
+.badge-done {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+.badge-danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+.badge-neutral {
+  background: var(--color-surface-2);
+  color: var(--color-ink-dim);
+}
+
+/* Pane section headers: the only uppercase in the app. */
+.pane-header {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-dim);
+}
+
+/* Card: 8px radius, hairline border, tonal fill. No shadows in dark mode. */
+.card {
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-2);
+}
+.card-hover:hover {
+  border-color: var(--color-line-strong);
+  background: var(--color-surface-3);
+}
+
+/* Mono well for transcripts / artifact bodies / logs. */
+.well {
+  font-family: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+}
+
+/* Streaming caret on the last assistant token. */
+.caret::after {
+  content: '▍';
+  margin-left: 1px;
+  color: var(--color-accent-bright);
+  animation: caret-blink 1s steps(1) infinite;
+}
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Live run dot: soft opacity pulse (opacity only; cheap to composite). */
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.live-dot {
+  background: var(--color-accent);
+  animation: live-pulse 2s var(--ease-out-quint) infinite;
+}
+
+/* Message entry: small fade-rise, opacity + transform only. */
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.msg-enter {
+  animation: fade-rise 160ms var(--ease-out-quint) both;
+}
+
+/* ---- Reduced motion: every animation has an off switch ------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .live-dot {
+    opacity: 1;
+  }
 }

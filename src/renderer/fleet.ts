@@ -10,14 +10,6 @@ export interface FleetRun {
   transcript: string[];
 }
 
-export const STATE_STYLES: Record<RunState, string> = {
-  queued: 'bg-surface-2 text-ink-dim',
-  running: 'bg-accent-soft text-accent',
-  done: 'bg-surface-2 text-ink-dim',
-  stopped: 'bg-surface-2 text-ink-dim',
-  error: 'bg-danger-soft text-danger',
-};
-
 export const STATE_LABELS: Record<RunState, string> = {
   queued: 'queued',
   running: 'running',
