@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { ActivityItem, ChatMessage } from '../App.js';
+import type { FleetRun } from '../fleet.js';
 
 const MODELS = ['gpt-5.2', 'claude-sonnet-4.6', 'gemini-3.6-pro', 'nemotron-3-ultra-free'];
 
@@ -10,18 +11,22 @@ export function ChatPane({
   activity,
   busy,
   model,
+  runs,
   onModelChange,
   onSend,
   onStop,
+  onOpenRun,
 }: {
   title: string;
   messages: ChatMessage[];
   activity: ActivityItem[];
   busy: boolean;
   model: string;
+  runs: FleetRun[];
   onModelChange: (m: string) => void;
   onSend: (text: string) => void;
   onStop: () => void;
+  onOpenRun: (id: string) => void;
 }) {
   const [draft, setDraft] = useState('');
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -64,15 +69,36 @@ export function ChatPane({
           </div>
         )}
         {messages.map((m, i) => (
-          <div
-            key={i}
-            className={`max-w-[76ch] text-sm leading-relaxed whitespace-pre-wrap ${
-              m.role === 'user'
-                ? 'self-end rounded-xl bg-accent-soft px-3.5 py-2.5'
-                : `self-start ${m.streaming ? "after:content-'▍' after:opacity-60" : ''}`
-            }`}
-          >
-            {m.text}
+          <div key={i} className="flex max-w-[76ch] flex-col gap-1.5">
+            <div
+              className={`text-sm leading-relaxed whitespace-pre-wrap ${
+                m.role === 'user'
+                  ? 'self-end rounded-xl bg-accent-soft px-3.5 py-2.5'
+                  : `self-start ${m.streaming ? "after:content-'▍' after:opacity-60" : ''}`
+              }`}
+            >
+              {m.text}
+            </div>
+            {m.role === 'assistant' && m.runIds && m.runIds.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 self-start">
+                {m.runIds.map((runId) => {
+                  const run = runs.find((r) => r.id === runId);
+                  if (!run) return null;
+                  return (
+                    <button
+                      key={runId}
+                      onClick={() => onOpenRun(runId)}
+                      className="flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] text-ink hover:bg-surface-2"
+                      title={`${run.task} — open in Fleet`}
+                    >
+                      <span className={`size-1.5 rounded-full ${run.state === 'running' ? 'animate-pulse bg-accent' : 'bg-ink-dim'}`} />
+                      {run.agent}
+                      <span className="text-ink-dim">· {run.state}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ))}
       </div>

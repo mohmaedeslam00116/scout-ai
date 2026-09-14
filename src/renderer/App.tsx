@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { getBridge, type ScoutAgentEvent } from './bridge.js';
 import type { Artifact } from './artifacts.js';
+import type { FleetRun } from './fleet.js';
 import { NavRail } from './components/NavRail.js';
 import { ConversationsPane } from './components/ConversationsPane.js';
 import { ChatPane } from './components/ChatPane.js';
 import { ArtifactsPane } from './components/ArtifactsPane.js';
+import { FleetView } from './components/FleetView.js';
 
 export type ViewName = 'projects' | 'conversations' | 'artifacts' | 'fleet' | 'schedules' | 'settings';
 
@@ -13,6 +15,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   streaming?: boolean;
+  /** Fleet run ids this assistant turn delegated to (renders inline chips). */
+  runIds?: string[];
 }
 
 export interface ActivityItem {
@@ -30,6 +34,9 @@ const nextId = () => `c${++idCounter}`;
 
 let artifactCounter = 0;
 const nextArtifactId = () => `a${++artifactCounter}`;
+
+let runCounter = 0;
+const nextRunId = () => `r${++runCounter}`;
 
 function demoArtifact(): Artifact {
   return {
@@ -60,6 +67,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState('gpt-5.2');
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [runs, setRuns] = useState<FleetRun[]>([]);
   const activityRef = useRef<HTMLDivElement | null>(null);
 
   const handleEvent = useCallback((event: ScoutAgentEvent) => {
@@ -110,11 +118,33 @@ export default function App() {
     async (text: string) => {
       setMessages((prev) => [...prev, { role: 'user', text }]);
       if (!bridge) {
-        // Demo mode (no Electron bridge): simulate a streamed research answer.
+        // Demo mode (no Electron bridge): simulate a streamed research answer
+        // with a Fleet delegation so the UI is reviewable without the harness.
         setBusy(true);
         setTimeout(() => setArtifacts((prev) => [...prev, demoArtifact()]), 600);
+        const runId = nextRunId();
+        setRuns((prev) => [
+          ...prev,
+          { id: runId, agent: 'researcher', task: `Research: ${text.slice(0, 60)}`, state: 'running', transcript: [] },
+        ]);
+        const lines = ['searching: exa ×3', 'fetched 5 sources', 'extracting evidence…', 'draft complete'];
+        lines.forEach((line, i) =>
+          setTimeout(() => {
+            setRuns((prev) =>
+              prev.map((r) =>
+                r.id === runId
+                  ? { ...r, transcript: [...r.transcript, line], state: i === lines.length - 1 ? ('done' as const) : r.state }
+                  : r,
+              ),
+            );
+          }, 500 + i * 700),
+        );
+        setMessages((prev) => [
+          ...prev,
+          { role: 'user', text },
+          { role: 'assistant', text: '', streaming: true, runIds: [runId] },
+        ]);
         const answer = `(demo) Scout would research: “${text}” — wire the pi harness to see real answers with sources.`;
-        setMessages((prev) => [...prev, { role: 'assistant', text: answer, streaming: true }]);
         for (const [kind, label] of [
           ['tool', 'web_search ×3'],
           ['done', 'fetch_content: 5 sources'],
@@ -186,26 +216,57 @@ export default function App() {
     );
   }, []);
 
+  const openTranscript = useCallback(
+    (id: string) => {
+      const run = runs.find((r) => r.id === id);
+      if (run) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'user',
+            text: `Transcript of ${run.agent} (${run.state}):\n${run.transcript.join('\n') || '(empty)'}`,
+          },
+        ]);
+        setView('conversations');
+      }
+    },
+    [runs],
+  );
+
+  const steerRun = useCallback((id: string, text: string) => {
+    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, transcript: [...r.transcript, `↳ steered: ${text}`] } : r)));
+  }, []);
+
+  const stopRun = useCallback((id: string) => {
+    setRuns((prev) => prev.map((r) => (r.id === id && r.state === 'running' ? { ...r, state: 'stopped' as const } : r)));
+  }, []);
+
+  const openRunFromChat = useCallback((id: string) => {
+    setView('fleet');
+  }, []);
+
   const active = conversations.find((c) => c.id === activeId);
 
   return (
     <div className="flex h-full">
       <NavRail active={view} onSelect={setView} onNewConversation={newConversation} />
-      <ConversationsPane
-        conversations={conversations}
-        activeId={activeId}
-        onSelect={setActiveId}
-      />
-      <ChatPane
-        title={active?.title ?? 'New conversation'}
-        messages={messages}
-        activity={activity}
-        busy={busy}
-        model={model}
-        onModelChange={setModel}
-        onSend={send}
-        onStop={() => void bridge?.abort()}
-      />
+      <ConversationsPane conversations={conversations} activeId={activeId} onSelect={setActiveId} />
+      {view === 'fleet' ? (
+        <FleetView runs={runs} onOpenTranscript={openTranscript} onSteer={steerRun} onStop={stopRun} />
+      ) : (
+        <ChatPane
+          title={active?.title ?? 'New conversation'}
+          messages={messages}
+          activity={activity}
+          busy={busy}
+          model={model}
+          runs={runs}
+          onModelChange={setModel}
+          onSend={send}
+          onStop={() => void bridge?.abort()}
+          onOpenRun={openRunFromChat}
+        />
+      )}
       <ArtifactsPane artifacts={artifacts} onApprove={approveArtifact} onComment={commentArtifact} />
     </div>
   );
