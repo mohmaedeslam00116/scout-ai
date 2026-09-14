@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { getBridge, type ScoutAgentEvent } from './bridge.js';
+import type { Artifact } from './artifacts.js';
 import { NavRail } from './components/NavRail.js';
 import { ConversationsPane } from './components/ConversationsPane.js';
 import { ChatPane } from './components/ChatPane.js';
@@ -27,6 +28,26 @@ export interface Conversation {
 let idCounter = 0;
 const nextId = () => `c${++idCounter}`;
 
+let artifactCounter = 0;
+const nextArtifactId = () => `a${++artifactCounter}`;
+
+function demoArtifact(): Artifact {
+  return {
+    id: nextArtifactId(),
+    kind: 'research-brief',
+    title: 'pi agent harness — overview',
+    status: 'review',
+    versions: [
+      {
+        version: 1,
+        createdAt: Date.now(),
+        body: '## Draft Research Brief\n\n1. pi is an agent harness by Earendil Works…\n2. Key packages: pi-agent-core, pi-ai…\n3. Sources: pi.dev, github.com/earendil-works/pi',
+      },
+    ],
+    comments: [],
+  };
+}
+
 export default function App() {
   const bridge = useMemo(getBridge, []);
   const [view, setView] = useState<ViewName>('conversations');
@@ -38,6 +59,7 @@ export default function App() {
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState('gpt-5.2');
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const activityRef = useRef<HTMLDivElement | null>(null);
 
   const handleEvent = useCallback((event: ScoutAgentEvent) => {
@@ -90,6 +112,7 @@ export default function App() {
       if (!bridge) {
         // Demo mode (no Electron bridge): simulate a streamed research answer.
         setBusy(true);
+        setTimeout(() => setArtifacts((prev) => [...prev, demoArtifact()]), 600);
         const answer = `(demo) Scout would research: “${text}” — wire the pi harness to see real answers with sources.`;
         setMessages((prev) => [...prev, { role: 'assistant', text: answer, streaming: true }]);
         for (const [kind, label] of [
@@ -137,6 +160,32 @@ export default function App() {
     setActivity([]);
   }, []);
 
+  const approveArtifact = useCallback((id: string) => {
+    setArtifacts((prev) => prev.map((a) => (a.id === id ? { ...a, status: 'approved' as const } : a)));
+  }, []);
+
+  const commentArtifact = useCallback((id: string, text: string) => {
+    setArtifacts((prev) =>
+      prev.map((a) =>
+        a.id === id
+          ? {
+              ...a,
+              comments: [...a.comments, { id: `k${Date.now()}`, text, ts: Date.now() }],
+              // Demo of the revise-in-place loop: feedback produces the next version.
+              versions: [
+                ...a.versions,
+                {
+                  version: a.versions.length + 1,
+                  createdAt: Date.now(),
+                  body: `${a.versions.at(-1)?.body ?? ''}\n\n## Revision (after feedback)\n- Addressed: “${text}”`,
+                },
+              ],
+            }
+          : a,
+      ),
+    );
+  }, []);
+
   const active = conversations.find((c) => c.id === activeId);
 
   return (
@@ -157,7 +206,7 @@ export default function App() {
         onSend={send}
         onStop={() => void bridge?.abort()}
       />
-      <ArtifactsPane />
+      <ArtifactsPane artifacts={artifacts} onApprove={approveArtifact} onComment={commentArtifact} />
     </div>
   );
 }

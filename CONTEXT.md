@@ -40,6 +40,24 @@ code-first. The agent engine is the **pi harness** — never a hand-rolled loop.
 | **Fleet** | The set of running subagent children (foreground streams + background runs) |
 | **Playbook** | A saved, reusable research workflow the Fleet can execute |
 
+## Artifact lifecycle (decision of wayfinder ticket #7)
+
+- Artifacts are **agent-driven**: the agent creates/updates them while researching
+  via a Scout-native `register_artifact` tool (kind, title, markdown body), and
+  users can explicitly request any via slash commands (`/brief`, `/sources`,
+  `/evidence`).
+- Kinds are enforced: `research-brief`, `source-dossier`, `evidence-table`.
+- Every artifact is **versioned** (v1, v2, …); feedback produces a new version,
+  never an overwrite.
+- **Pause at the Brief**: when a Research Brief draft is ready, the agent pauses
+  (implemented by blocking/holding after the `register_artifact` call for that
+  brief) and requests review. Dossiers and Evidence Tables stream without
+  pausing.
+- **Inline comments → revise in place**: the user comments on the paused
+  artifact; the agent revises (next version) and re-requests review; **approving
+  releases the pause** and the run continues. Feedback travels to the agent as a
+  steering message referencing the artifact id + version.
+
 ## Architecture
 
 - `src/main` — Electron main process; `agentHost.ts` embeds the pi harness and
