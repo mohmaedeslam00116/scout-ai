@@ -44,6 +44,10 @@ export interface ScoutBridge {
   projectsDelete?(projectId: string): Promise<void>;
   projectConversations?(projectId: string): Promise<ConversationSummary[]>;
   scratchConversations?(): Promise<ConversationSummary[]>;
+  restoreConversation?(projectId: string | null, sessionPath: string): Promise<{ ok: boolean; error?: string }>;
+  renameConversation?(sessionPath: string, name: string): Promise<void>;
+  archiveConversation?(projectId: string | null, sessionPath: string, archived: boolean): Promise<void>;
+  moveConversation?(sessionFileName: string, projectId: string): Promise<void>;
 }
 
 export function getBridge(): ScoutBridge | null {

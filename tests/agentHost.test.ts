@@ -141,6 +141,97 @@ test('target options: per-sessionDir reuse and fresh recreation', async () => {
   assert.equal(created, 3); // different cwd = different session
 });
 
+test('restore replays transcript messages into the stream and resumes that target', async () => {
+  // The fake "pi session" for the restored target replays stored transcript
+  // messages upon prompt (simulating pi's resume context) then streams live.
+  const restored = fakeSession(async (emit) => {
+    emit({ type: 'agent_start' });
+    emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'restored answer' }] } });
+    emit({ type: 'agent_end', messages: [], willRetry: false });
+  });
+  const requests: { cwd: string; sessionDir?: string; resume?: string }[] = [];
+  const host2 = new AgentHost(
+    { emit: (_c, e) => replayed.push(e) },
+    async (req) => {
+      requests.push(req);
+      return req.resume ? restored : fakeSession(async () => {});
+    },
+    {
+      reader: async (path) =>
+        path === 'C:\\proj\\sessions\\abc.jsonl'
+          ? [
+              { role: 'user' as const, text: 'earlier question' },
+              { role: 'assistant' as const, text: 'earlier answer' },
+            ]
+          : [],
+    },
+  );
+  const replayed: ScoutAgentEvent[] = [];
+
+  const result = await host2.restore('C:\\proj', 'C:\\proj\\sessions', 'C:\\proj\\sessions\\abc.jsonl');
+
+  assert.equal(result.ok, true);
+  const texts = replayed.filter((e) => e.type === 'message_end').map((e) => (e as { text: string }).text);
+  assert.deepEqual(texts, ['earlier question', 'earlier answer']);
+  // The next plain send to that target resumes the restored session file
+  // (any previously live session on the target was dropped by restore).
+  await host2.send('continue', { cwd: 'C:\\proj', sessionDir: 'C:\\proj\\sessions' });
+  assert.equal(requests.at(-1)?.resume, 'C:\\proj\\sessions\\abc.jsonl');
+});
+
+test('restore while busy refuses cleanly', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const slow = fakeSession(async () => {
+    await gate;
+  });
+  const { host } = (() => {
+    const h = new AgentHost({ emit: () => {} }, async () => slow);
+    return { host: h };
+  })();
+  const running = host.send('long run');
+  const result = await host.restore('C', 'S', 'X.jsonl');
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /busy/);
+  release();
+  await running;
+});
+
+test('restore failure surfaces a clean error', async () => {
+  const host = new AgentHost(
+    { emit: () => {} },
+    async () => fakeSession(async () => {}),
+    {
+      reader: async () => {
+        throw new Error('bad session file');
+      },
+    },
+  );
+  const result = await host.restore('S', 'S', 'X.jsonl');
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /bad session file/);
+});
+
+async function renameHarness() {
+  const renamed: { file: string; name: string }[] = [];
+  const host = new AgentHost(
+    { emit: () => {} },
+    async () => fakeSession(async () => {}),
+    {
+      renamer: async (file, name) => {
+        renamed.push({ file, name });
+      },
+    },
+  );
+  return { host, renamed };
+}
+
+test('renameConversation delegates to the injected renamer', async () => {
+  const { host, renamed } = await renameHarness();
+  await host.renameConversation('a.jsonl', 'Weekly digest');
+  assert.deepEqual(renamed, [{ file: 'a.jsonl', name: 'Weekly digest' }]);
+});
+
 test('listConversations sorts by modified desc and maps to summaries', async () => {
   const host = new AgentHost(
     { emit: () => {} },

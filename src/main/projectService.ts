@@ -9,6 +9,7 @@
 import { mkdirSync } from 'node:fs';
 
 import { AgentHost, type ConversationSummary } from './agentHost.ts';
+import { ConversationStore } from './conversationStore.ts';
 import { ProjectRegistry, type ProjectMeta } from './registry.ts';
 import { ProjectStore, type ProjectPatch, type ProjectSettings } from './projectStore.ts';
 import type { ScoutPaths } from './paths.ts';
@@ -19,6 +20,7 @@ export interface ProjectView extends ProjectMeta {
 
 export class ProjectService {
   readonly registry: ProjectRegistry;
+  private readonly convStore: ConversationStore;
   private readonly store: ProjectStore;
   private readonly paths: ScoutPaths;
   private readonly host: AgentHost;
@@ -28,6 +30,7 @@ export class ProjectService {
     this.host = host;
     this.registry = new ProjectRegistry(paths.registryFile, paths.projectsDir);
     this.store = new ProjectStore(paths.projectsDir);
+    this.convStore = new ConversationStore(paths);
   }
 
   /** Registry view merged with each project's settings. */
@@ -75,6 +78,36 @@ export class ProjectService {
   /** Scratch conversations (scratch sessionDir), newest first. */
   async scratchConversations(): Promise<ConversationSummary[]> {
     return this.host.listConversations(this.paths.scratchSessions);
+  }
+
+  /** Transcript restore (T02): replay a stored conversation into the UI. */
+  restore(
+    projectId: string | null,
+    sessionPath: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const target =
+      projectId === null ? this.scratchTarget() : this.sendTargetFor(projectId);
+    return this.host.restore(target.cwd, target.sessionDir, sessionPath);
+  }
+
+  /** Rename via pi's session_info entry. */
+  renameConversation(sessionPath: string, name: string): Promise<void> {
+    return this.host.renameConversation(sessionPath, name);
+  }
+
+  /** Archive flags (Scout-side markers; pi has no archive concept). */
+  setArchived(_projectId: string | null, sessionPath: string, archived: boolean): void {
+    if (archived) this.convStore.archive(sessionPath);
+    else this.convStore.unarchive(sessionPath);
+  }
+
+  isArchived(_projectId: string | null, sessionPath: string): boolean {
+    return this.convStore.isArchived(sessionPath);
+  }
+
+  /** Move a scratch conversation (by file name) into a project. */
+  moveScratchToProject(sessionFileName: string, projectId: string): void {
+    this.convStore.moveScratchToProject(sessionFileName, projectId);
   }
 
   /** Where sends for this project land (effective cwd + per-project sessionDir). */

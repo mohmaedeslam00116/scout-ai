@@ -21,4 +21,14 @@ contextBridge.exposeInMainWorld('scout', {
   projectConversations: (projectId: string) =>
     ipcRenderer.invoke('scout:projects:conversations', projectId),
   scratchConversations: () => ipcRenderer.invoke('scout:scratch:conversations'),
+
+  // Conversations (T02)
+  restoreConversation: (projectId: string | null, sessionPath: string) =>
+    ipcRenderer.invoke('scout:conversations:restore', projectId, sessionPath),
+  renameConversation: (sessionPath: string, name: string) =>
+    ipcRenderer.invoke('scout:conversations:rename', sessionPath, name),
+  archiveConversation: (projectId: string | null, sessionPath: string, archived: boolean) =>
+    ipcRenderer.invoke('scout:conversations:archive', projectId, sessionPath, archived),
+  moveConversation: (sessionFileName: string, projectId: string) =>
+    ipcRenderer.invoke('scout:conversations:move', sessionFileName, projectId),
 });

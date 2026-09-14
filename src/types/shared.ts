@@ -4,7 +4,7 @@ export type ScoutAgentEvent =
   | { type: 'agent_start' }
   | { type: 'message_start'; role: 'user' | 'assistant' }
   | { type: 'message_delta'; text: string }
-  | { type: 'message_end'; role: 'assistant'; text: string }
+  | { type: 'message_end'; role: 'user' | 'assistant'; text: string }
   | { type: 'tool_call'; name: string; args: unknown }
   | { type: 'tool_result'; name: string; ok: boolean; summary: string }
   | { type: 'agent_end'; reason?: string };

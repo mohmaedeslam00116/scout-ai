@@ -30,6 +30,8 @@ export interface Conversation {
   title: string;
   /** Path of the stored session jsonl (real mode), empty in demo mode. */
   path?: string;
+  /** Scout-side archive flag (T02). */
+  archived?: boolean;
 }
 
 /** A sidebar group: one per project, plus the scratch group. */
@@ -108,6 +110,10 @@ export default function App() {
         setMessages((prev) => {
           const next = [...prev];
           const last = next.at(-1);
+          if (event.role === 'user') {
+            // Replay-only: restored user messages append directly.
+            return [...prev, { role: 'user', text: event.text }];
+          }
           if (last?.role === 'assistant') next[next.length - 1] = { ...last, text: event.text, streaming: false };
           return next;
         });
@@ -158,6 +164,12 @@ export default function App() {
       if (!bridge) {
         // Demo mode (no Electron bridge): simulate a streamed research answer
         // with a Fleet delegation so the UI is reviewable without the harness.
+        const convId = `demo-${Date.now()}`;
+        setScratchConversations((prev) => [
+          { id: convId, title: text.slice(0, 60), archived: false },
+          ...prev,
+        ]);
+        setActiveId(convId);
         setBusy(true);
         setTimeout(() => setArtifacts((prev) => [...prev, demoArtifact()]), 600);
         const runId = nextRunId();
@@ -327,13 +339,83 @@ export default function App() {
   const active = allConversations.find((c) => c.id === activeId);
   const activeGroupName = groups.find((g) => g.id === activeGroup)?.name ?? 'Scratch';
 
-  const selectConversation = useCallback((groupId: string, id: string) => {
-    setActiveGroup(groupId);
-    setActiveId(id);
-    setMessages([]);
-    setActivity([]);
-    // T02 will restore the transcript here; T01 selects and clears.
-  }, []);
+  const selectConversation = useCallback(
+    (groupId: string, id: string) => {
+      setActiveGroup(groupId);
+      setActiveId(id);
+      setMessages([]);
+      setActivity([]);
+      const convo = groups.flatMap((g) => g.conversations).find((c) => c.id === id);
+      if (!bridge?.restoreConversation || !convo?.path) return; // demo mode / T01-only selection
+      bridge
+        .restoreConversation(groupId === 'scratch' ? null : groupId, convo.path)
+        .then((result) => {
+          if (result && 'ok' in result && !result.ok) {
+            setMessages([{ role: 'assistant', text: `Could not restore conversation: ${result.error}` }]);
+          }
+        })
+        .catch((err: Error) => setMessages([{ role: 'assistant', text: `Could not restore: ${err.message}` }]));
+    },
+    [bridge, groups],
+  );
+
+  const retagGroup = (
+    groupId: string,
+    convoId: string,
+    tag: (c: Conversation) => Conversation,
+  ) => {
+    if (groupId === 'scratch') setScratchConversations((prev) => prev.map((c) => (c.id === convoId ? tag(c) : c)));
+    else
+      setProjectConversations((prev) => ({
+        ...prev,
+        [groupId]: (prev[groupId] ?? []).map((c) => (c.id === convoId ? tag(c) : c)),
+      }));
+  };
+
+  const renameConversation = useCallback(
+    (groupId: string, convo: Conversation, name: string) => {
+      if (bridge?.renameConversation && convo.path) {
+        bridge.renameConversation(convo.path, name).catch(() => {});
+      }
+      // Optimistic everywhere (demo mode included): the title updates locally.
+      retagGroup(groupId, convo.id, (c) => ({ ...c, title: name }));
+    },
+    [bridge],
+  );
+
+  const archiveConversation = useCallback(
+    (groupId: string, convo: Conversation, archived: boolean) => {
+      if (bridge?.archiveConversation && convo.path) {
+        bridge.archiveConversation(groupId === 'scratch' ? null : groupId, convo.path, archived).catch(() => {});
+      }
+      retagGroup(groupId, convo.id, (c) => ({ ...c, archived }));
+    },
+    [bridge],
+  );
+
+  const moveConversation = useCallback(
+    (convo: Conversation, projectId: string) => {
+      if (bridge?.moveConversation && convo.path) {
+        const fileName = convo.path.split(/[\\/]/).pop() ?? convo.path;
+        bridge.moveConversation(fileName, projectId).catch(() => {});
+      }
+      // Optimistic: leave scratch list, appear in the target project group.
+      setScratchConversations((prev) => prev.filter((c) => c.id !== convo.id));
+      setProjectConversations((prev) => ({
+        ...prev,
+        [projectId]: [{ ...convo }, ...(prev[projectId] ?? [])],
+      }));
+      if (bridge?.projectConversations) {
+        bridge.projectConversations(projectId).then((list) => {
+          setProjectConversations((prev) => ({
+            ...prev,
+            [projectId]: list.map((c) => ({ id: c.path, path: c.path, title: titleFor(c) })),
+          }));
+        });
+      }
+    },
+    [bridge],
+  );
 
   const approveArtifact = useCallback((id: string) => {
     setArtifacts((prev) => prev.map((a) => (a.id === id ? { ...a, status: 'approved' as const } : a)));
@@ -402,7 +484,15 @@ export default function App() {
           onRename={renameProject}
         />
       ) : (
-        <ConversationsPane groups={groups} activeId={activeId} onSelect={selectConversation} />
+        <ConversationsPane
+          groups={groups}
+          activeId={activeId}
+          onSelect={selectConversation}
+          onRename={renameConversation}
+          onArchive={archiveConversation}
+          onMove={moveConversation}
+          moveTargets={projects.map((p) => ({ id: p.id, name: p.name }))}
+        />
       )}
       {view === 'fleet' ? (
         <FleetView runs={runs} onOpenTranscript={openTranscript} onSteer={steerRun} onStop={stopRun} />

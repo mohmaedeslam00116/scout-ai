@@ -19,9 +19,14 @@ function channelsOf(src: string, pattern: RegExp): Set<string> {
   return set;
 }
 
+/** Every scout channel literal mentioned in a file (multiline-safe). */
+function scoutChannels(src: string): Set<string> {
+  return channelsOf(src, /'(scout:[^']+)'/g);
+}
+
 describe('scout IPC contract', () => {
-  const invoked = channelsOf(preloadSrc, /ipcRenderer\.invoke\('([^']+)'/g);
-  const handled = channelsOf(mainSrc, /ipcMain\.handle\('([^']+)'/g);
+  const invoked = scoutChannels(preloadSrc);
+  const handled = scoutChannels(mainSrc);
   const sent = channelsOf(mainSrc, /webContents\.send\('([^']+)'/g);
   const listened = channelsOf(preloadSrc, /ipcRenderer\.on\('([^']+)'/g);
 

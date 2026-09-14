@@ -32,6 +32,11 @@ describe('scoutPaths', () => {
     assert.equal(p.scratchHome, 'C:\\userdata\\scratch\\home');
   });
 
+  it('provides conversation-meta dirs for projects and scratch (T02 archive flags)', () => {
+    assert.equal(p.projectMeta('p_ab12cd34'), 'C:\\userdata\\projects\\p_ab12cd34\\conversation-meta');
+    assert.equal(p.scratchMeta, 'C:\\userdata\\scratch\\conversation-meta');
+  });
+
   it('effective cwd = first bound folder, else the project home', () => {
     assert.equal(p.effectiveCwd('p_x', []), 'C:\\userdata\\projects\\p_x\\home');
     assert.equal(p.effectiveCwd('p_x', ['D:\\research\\feeds', 'D:\\more']), 'D:\\research\\feeds');

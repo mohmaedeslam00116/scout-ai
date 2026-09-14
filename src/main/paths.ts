@@ -23,12 +23,14 @@ export interface ScoutPaths {
   readonly scratchArtifacts: string;
   readonly scratchRuns: string;
   readonly scratchHome: string;
+  readonly scratchMeta: string;
   projectDir(projectId: string): string;
   projectFile(projectId: string): string;
   projectSessions(projectId: string): string;
   projectArtifacts(projectId: string): string;
   projectRuns(projectId: string): string;
   projectHome(projectId: string): string;
+  projectMeta(projectId: string): string;
   /** Effective cwd for a project: first bound folder, else its auto home. */
   effectiveCwd(projectId: string, boundFolders: readonly string[]): string;
 }
@@ -47,6 +49,7 @@ export function scoutPaths(userDataDir: string): ScoutPaths {
     scratchArtifacts: path.join(scratchDir, 'artifacts'),
     scratchRuns: path.join(scratchDir, 'runs'),
     scratchHome: path.join(scratchDir, 'home'),
+    scratchMeta: path.join(scratchDir, 'conversation-meta'),
     projectDir(projectId) {
       return path.join(projectsDir, projectId);
     },
@@ -61,6 +64,9 @@ export function scoutPaths(userDataDir: string): ScoutPaths {
     },
     projectRuns(projectId) {
       return path.join(projectsDir, projectId, 'runs');
+    },
+    projectMeta(projectId) {
+      return path.join(projectsDir, projectId, 'conversation-meta');
     },
     projectHome(projectId) {
       return path.join(projectsDir, projectId, 'home');

@@ -41,6 +41,8 @@ export interface SendTarget {
   sessionDir?: string;
   /** Force a brand-new conversation instead of continuing the target's one. */
   fresh?: boolean;
+  /** Resume a specific stored session file (transcript restore, T02). */
+  resume?: string;
 }
 
 /** One conversation as the renderer sees it (from pi SessionInfo). */
@@ -57,13 +59,23 @@ export interface ConversationSummary {
 /** Injectable read path over pi SessionManager.listAll (tests stay pi-free). */
 export type SessionLister = (sessionDir: string) => Promise<ConversationSummary[]>;
 
+/** Injectable transcript reader over pi SessionManager.open().getEntries(). */
+export type TranscriptReader = (
+  sessionPath: string,
+) => Promise<{ role: 'user' | 'assistant'; text: string }[]>;
+
+/** Injectable rename over pi SessionManager.open().appendSessionInfo(). */
+export type SessionRenamer = (sessionPath: string, name: string) => Promise<void>;
+
 export interface HostOptions {
   /** Default destination when a send names no target (scratch-first, #16 §7). */
   scratch?: { cwd: string; sessionDir: string };
   lister?: SessionLister;
+  reader?: TranscriptReader;
+  renamer?: SessionRenamer;
 }
 
-export type SessionFactory = (target: { cwd: string; sessionDir?: string }) => Promise<PiLikeSession>;
+export type SessionFactory = (target: SendTarget) => Promise<PiLikeSession>;
 
 export class AgentHost {
   private busy = false;
@@ -76,6 +88,8 @@ export class AgentHost {
   private readonly sessions = new Map<string, PiLikeSession>();
   /** Unsubscribe per session, so replaced sessions don't leak listeners. */
   private readonly unsubscribers = new Map<string, () => void>();
+  /** Resume file per target, set by restore() and consumed by sessionFor(). */
+  private readonly resumeByTarget = new Map<string, string>();
   private sessionPromise: Promise<PiLikeSession> | null = null;
 
   constructor(sink: HostSink, createSession: SessionFactory, options: HostOptions = {}) {
@@ -101,10 +115,48 @@ export class AgentHost {
     return `${target.cwd}\u0000${target.sessionDir ?? ''}`;
   }
 
+  /**
+   * Transcript restore (T02): open the stored session, replay its messages to
+   * the renderer, and pin the target so subsequent sends resume that file.
+   */
+  async restore(cwd: string, sessionDir: string, sessionPath: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.busy) return { ok: false, error: 'Agent is busy' };
+    try {
+      const reader = this.options.reader;
+      const messages = reader ? await reader(sessionPath) : await piReadTranscript(sessionPath);
+      this.sink.emit('scout:event', { type: 'agent_start' });
+      for (const m of messages) {
+        this.messages.push(m);
+        this.sink.emit('scout:event', {
+          type: 'message_end',
+          role: m.role,
+          text: m.text,
+        });
+      }
+      this.sink.emit('scout:event', { type: 'agent_end' });
+      const key = AgentHost.keyOf({ cwd, sessionDir });
+      this.resumeByTarget.set(key, sessionPath);
+      // Drop any live session on this target so the next send creates one on
+      // the resumed file instead of continuing the previous conversation.
+      await this.dropSession(key);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** Rename a stored conversation via pi's session_info entry. */
+  async renameConversation(sessionPath: string, name: string): Promise<void> {
+    const renamer = this.options.renamer;
+    if (renamer) return renamer(sessionPath, name);
+    return piRenameSession(sessionPath, name);
+  }
+
   private async sessionFor(target: SendTarget): Promise<PiLikeSession> {
     const key = AgentHost.keyOf(target);
     if (target.fresh) {
       // New conversation: drop the target's live session (if any) and make one.
+      this.resumeByTarget.delete(key);
       await this.dropSession(key);
     } else {
       const existing = this.sessions.get(key);
@@ -113,7 +165,8 @@ export class AgentHost {
     if (this.sessionPromise) return this.sessionPromise;
 
     this.sessionPromise = (async () => {
-      const session = await this.createSession(target);
+      const resume = target.resume ?? this.resumeByTarget.get(key);
+      const session = await this.createSession(resume ? { ...target, resume } : target);
       const unsubscribe = session.subscribe((raw) => {
         for (const mapped of this.mapAndLog(raw)) this.sink.emit('scout:event', mapped);
       });
@@ -226,15 +279,15 @@ function safeArgs(args: unknown): string {
  * Production SessionFactory: embeds the pi harness (ADR-0002, decision #2).
  * When a target carries an explicit sessionDir, the session is created around
  * a SessionManager rooted there (decision #16): session files land beside the
- * project. Dynamic import keeps tests and typecheck free of pi side effects.
+ * project. A `resume` path opens that stored session instead (transcript
+ * restore, T02). Dynamic import keeps tests free of pi side effects.
  */
 export function piSessionFactory(agentDir: string): SessionFactory {
   return async (target) => {
-    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
-    const { SessionManager } = await import('@earendil-works/pi-coding-agent');
-    const sessionManager = target.sessionDir
-      ? SessionManager.create(target.cwd, target.sessionDir)
-      : SessionManager.create(target.cwd);
+    const { createAgentSession, SessionManager } = await import('@earendil-works/pi-coding-agent');
+    const sessionManager = target.resume
+      ? SessionManager.open(target.resume, target.sessionDir, target.cwd)
+      : SessionManager.create(target.cwd, target.sessionDir);
     const { session } = await createAgentSession({
       cwd: target.cwd,
       agentDir,
@@ -257,4 +310,35 @@ export async function piSessionList(sessionDir: string): Promise<ConversationSum
     messageCount: info.messageCount,
     firstMessage: info.firstMessage,
   }));
+}
+
+/** Production transcript reader: pi SessionManager.open().getEntries(). */
+export async function piReadTranscript(
+  sessionPath: string,
+): Promise<{ role: 'user' | 'assistant'; text: string }[]> {
+  const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+  const manager = SessionManager.open(sessionPath);
+  const out: { role: 'user' | 'assistant'; text: string }[] = [];
+  for (const entry of manager.getEntries()) {
+    if (entry.type !== 'message') continue;
+    const message = entry.message as { role?: string; content?: unknown };
+    const role = message.role === 'assistant' ? 'assistant' : 'user';
+    const content = message.content;
+    const text =
+      typeof content === 'string'
+        ? content
+        : Array.isArray(content)
+          ? content
+              .map((block) => (block && typeof block === 'object' && 'text' in block ? String((block as { text: unknown }).text) : ''))
+              .join('')
+          : '';
+    if (text.trim()) out.push({ role, text });
+  }
+  return out;
+}
+
+/** Production rename: pi SessionManager.open().appendSessionInfo(name). */
+export async function piRenameSession(sessionPath: string, name: string): Promise<void> {
+  const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+  SessionManager.open(sessionPath).appendSessionInfo(name);
 }

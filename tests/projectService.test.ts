@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -72,6 +72,38 @@ describe('ProjectService', () => {
     const p = svc.create('P');
     svc.patchSettings(p.id, { reviewPolicy: 'always-proceed' });
     assert.equal(svc.list()[0]?.settings?.reviewPolicy, 'always-proceed');
+  });
+
+  it('restore delegates to the host with the right target', async () => {
+    const calls: { cwd: string; sessionDir: string; sessionPath: string }[] = [];
+    const root2 = mkdtempSync(join(tmpdir(), 'scout-svc2-'));
+    const paths2 = scoutPaths(root2);
+    const host2 = {
+      restore: async (cwd: string, sessionDir: string, sessionPath: string) => {
+        calls.push({ cwd, sessionDir, sessionPath });
+        return { ok: true as const };
+      },
+    } as unknown as AgentHost;
+    const svc2 = new ProjectService(paths2, host2);
+    const p = svc2.create('R');
+    await svc2.restore(p.id, 'C:\\sess\\a.jsonl');
+    await svc2.restore(null, 'C:\\sess\\b.jsonl');
+    assert.equal(calls[0]?.cwd, paths2.projectHome(p.id));
+    assert.equal(calls[1]?.sessionDir, paths2.scratchSessions);
+  });
+
+  it('archive flags and scratch-to-project move delegate to the conversation store', () => {
+    const p = svc.create('M');
+    mkdirSync(paths.scratchSessions, { recursive: true });
+    const sessionFile = join(paths.scratchSessions, 'm1.jsonl');
+    writeFileSync(sessionFile, '{}', 'utf8');
+
+    svc.setArchived(null, sessionFile, true);
+    assert.equal(svc.isArchived(null, sessionFile), true);
+
+    svc.moveScratchToProject('m1.jsonl', p.id);
+    assert.ok(existsSync(join(paths.projectSessions(p.id), 'm1.jsonl')));
+    assert.equal(svc.isArchived(p.id, join(paths.projectSessions(p.id), 'm1.jsonl')), true);
   });
 });
 

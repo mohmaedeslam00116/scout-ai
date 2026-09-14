@@ -81,6 +81,23 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('scout:scratch:conversations', () => projects?.scratchConversations());
 
+  // Conversations (T02): restore, rename, archive, move.
+  ipcMain.handle(
+    'scout:conversations:restore',
+    (_e, projectId: string | null, sessionPath: string) => projects?.restore(projectId, sessionPath),
+  );
+  ipcMain.handle('scout:conversations:rename', (_e, sessionPath: string, name: string) =>
+    projects?.renameConversation(sessionPath, name),
+  );
+  ipcMain.handle(
+    'scout:conversations:archive',
+    (_e, projectId: string | null, sessionPath: string, archived: boolean) =>
+      projects?.setArchived(projectId, sessionPath, archived),
+  );
+  ipcMain.handle('scout:conversations:move', (_e, sessionFileName: string, projectId: string) =>
+    projects?.moveScratchToProject(sessionFileName, projectId),
+  );
+
   createWindow();
 
   app.on('activate', () => {
