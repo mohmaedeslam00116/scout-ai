@@ -23,17 +23,4 @@ await build({
   outfile: 'dist/preload/preload.cjs',
 });
 
-// Renderer: classic IIFE script.
-await build({
-  entryPoints: ['src/renderer/app.ts'],
-  bundle: true,
-  format: 'iife',
-  sourcemap: true,
-  outfile: 'dist/renderer/app.js',
-});
-
-mkdirSync('dist/renderer', { recursive: true });
-cpSync('src/renderer/index.html', 'dist/renderer/index.html');
-cpSync('src/renderer/styles.css', 'dist/renderer/styles.css');
-
-console.log('build ok');
+console.log('main+preload build ok');
