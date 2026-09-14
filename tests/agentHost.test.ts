@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { AgentHost, type PiLikeSession, type ScoutAgentEvent } from '../src/main/agentHost.ts';
+import type { ProceedController } from '../src/main/proceedGate.ts';
 
 /** Fake pi session: replays a scripted event stream when prompted. */
 function fakeSession(script: (emit: (e: unknown) => void) => Promise<void>): PiLikeSession {
@@ -177,6 +178,20 @@ test('restore replays transcript messages into the stream and resumes that targe
   // (any previously live session on the target was dropped by restore).
   await host2.send('continue', { cwd: 'C:\\proj', sessionDir: 'C:\\proj\\sessions' });
   assert.equal(requests.at(-1)?.resume, 'C:\\proj\\sessions\\abc.jsonl');
+});
+
+test('proceed gate unit: holds, approves, rejects', async () => {
+  const { createProceedGate } = await import('../src/main/proceedGate.ts');
+  const { controller, promise } = createProceedGate('a_1', 'research-brief', 'T');
+  let settled = false;
+  promise.then((outcome) => {
+    settled = true;
+    void outcome;
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(settled, false); // holds
+  controller.approve();
+  assert.equal(await promise, 'approved');
 });
 
 test('restore while busy refuses cleanly', async () => {

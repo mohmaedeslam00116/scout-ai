@@ -48,6 +48,11 @@ export interface ScoutBridge {
   renameConversation?(sessionPath: string, name: string): Promise<void>;
   archiveConversation?(projectId: string | null, sessionPath: string, archived: boolean): Promise<void>;
   moveConversation?(sessionFileName: string, projectId: string): Promise<void>;
+  artifactsList?(projectId: string | null): Promise<unknown[]>;
+  artifactsHydrate?(projectId: string | null, artifactId: string): Promise<unknown>;
+  artifactsApprove?(artifactId: string, comment?: string): Promise<void>;
+  artifactsComment?(artifactId: string, text: string, steerText?: string): Promise<void>;
+  artifactsRegister?(args: { kind: string; title: string; body: string }, projectId: string | null, policy: string): Promise<unknown>;
 }
 
 export function getBridge(): ScoutBridge | null {

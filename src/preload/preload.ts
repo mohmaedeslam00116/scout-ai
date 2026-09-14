@@ -31,4 +31,13 @@ contextBridge.exposeInMainWorld('scout', {
     ipcRenderer.invoke('scout:conversations:archive', projectId, sessionPath, archived),
   moveConversation: (sessionFileName: string, projectId: string) =>
     ipcRenderer.invoke('scout:conversations:move', sessionFileName, projectId),
+
+  // Artifacts (T03)
+  artifactsList: (projectId: string | null) => ipcRenderer.invoke('scout:artifacts:list', projectId),
+  artifactsHydrate: (projectId: string | null, artifactId: string) =>
+    ipcRenderer.invoke('scout:artifacts:hydrate', projectId, artifactId),
+  artifactsApprove: (artifactId: string, comment?: string) =>
+    ipcRenderer.invoke('scout:artifacts:approve', artifactId, comment),
+  artifactsComment: (artifactId: string, text: string, steerText?: string) =>
+    ipcRenderer.invoke('scout:artifacts:comment', artifactId, text, steerText),
 });

@@ -10,19 +10,28 @@ function ArtifactCard({
   artifact,
   onApprove,
   onComment,
+  onExpand,
 }: {
   artifact: Artifact;
   onApprove: (id: string) => void;
   onComment: (id: string, text: string) => void;
+  onExpand: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const latest = artifact.versions.at(-1);
 
+  const toggle = () => {
+    setOpen((v) => {
+      if (!v) onExpand(artifact.id);
+      return !v;
+    });
+  };
+
   return (
     <div className="card overflow-hidden">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         aria-expanded={open}
         className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors duration-150 hover:bg-surface-3"
       >
@@ -92,10 +101,12 @@ export function ArtifactsPane({
   artifacts,
   onApprove,
   onComment,
+  onExpand,
 }: {
   artifacts: Artifact[];
   onApprove: (id: string) => void;
   onComment: (id: string, text: string) => void;
+  onExpand: (id: string) => void;
 }) {
   const reviewCount = artifacts.filter((a) => a.status === 'review').length;
 
@@ -127,7 +138,7 @@ export function ArtifactsPane({
           <ul className="flex flex-col gap-2">
             {artifacts.map((a) => (
               <li key={a.id}>
-                <ArtifactCard artifact={a} onApprove={onApprove} onComment={onComment} />
+                <ArtifactCard artifact={a} onApprove={onApprove} onComment={onComment} onExpand={onExpand} />
               </li>
             ))}
           </ul>

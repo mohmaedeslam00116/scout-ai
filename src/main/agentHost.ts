@@ -18,6 +18,8 @@
  */
 
 import { mapSessionEvent } from './mapEvent.ts';
+import { runRegisterArtifact, shouldAwaitApproval } from './artifactTool.ts';
+import type { ArtifactToolDeps, RegisterArtifactArgs } from './artifactTool.ts';
 import type { ScoutAgentEvent, ScoutState } from '../types/shared.ts';
 
 export type { ScoutAgentEvent, ScoutState };
@@ -30,6 +32,8 @@ export interface HostSink {
 export interface PiLikeSession {
   subscribe(listener: (event: unknown) => void): () => void;
   prompt(text: string): Promise<void>;
+  /** Queue a mid-run steering message (verified pi primitive, decision #14). */
+  steer?(text: string): void;
   abort(): Promise<void>;
   isStreaming: boolean;
 }
@@ -73,9 +77,14 @@ export interface HostOptions {
   lister?: SessionLister;
   reader?: TranscriptReader;
   renamer?: SessionRenamer;
+  /** Production only: extra pi tools per target (register_artifact). */
+  tools?: ToolProvider;
 }
 
 export type SessionFactory = (target: SendTarget) => Promise<PiLikeSession>;
+
+/** Extra tools (pi ToolDefinitions) handed to sessions for a target. */
+export type ToolProvider = (target: SendTarget) => Promise<unknown[]>;
 
 export class AgentHost {
   private busy = false;
@@ -248,6 +257,16 @@ export class AgentHost {
     return [...raw].sort((a, b) => b.modified - a.modified);
   }
 
+  /**
+   * Steer the active run (artifact inline comments ride this, decision #14).
+   * No-op when idle — steering only makes sense mid-run.
+   */
+  steer(text: string): void {
+    for (const session of this.sessions.values()) {
+      if (session.isStreaming) session.steer?.(text);
+    }
+  }
+
   async abort(): Promise<void> {
     if (this.sessionPromise) return; // still creating; nothing to abort yet
     for (const session of this.sessions.values()) {
@@ -282,19 +301,63 @@ function safeArgs(args: unknown): string {
  * project. A `resume` path opens that stored session instead (transcript
  * restore, T02). Dynamic import keeps tests free of pi side effects.
  */
-export function piSessionFactory(agentDir: string): SessionFactory {
+export function piSessionFactory(agentDir: string, tools?: ToolProvider): SessionFactory {
   return async (target) => {
     const { createAgentSession, SessionManager } = await import('@earendil-works/pi-coding-agent');
     const sessionManager = target.resume
       ? SessionManager.open(target.resume, target.sessionDir, target.cwd)
       : SessionManager.create(target.cwd, target.sessionDir);
+    const customTools = tools ? await tools(target) : undefined;
     const { session } = await createAgentSession({
       cwd: target.cwd,
       agentDir,
       sessionManager,
+      ...(customTools && customTools.length > 0 ? { customTools: customTools as never[] } : {}),
     });
     return session as unknown as PiLikeSession;
   };
+}
+
+/**
+ * Build the pi ToolDefinition for register_artifact (decision #14) and adapt
+ * it to pi's tool shape. Lives here so every pi import stays in this file
+ * (AGENTS.md); tests exercise the pure `runRegisterArtifact` instead.
+ */
+export async function buildArtifactTool(deps: ArtifactToolDeps): Promise<unknown> {
+  const [{ defineTool }, { Type }] = await Promise.all([
+    import('@earendil-works/pi-coding-agent'),
+    import('typebox'),
+  ]);
+  return defineTool({
+    name: 'register_artifact',
+    label: 'Register artifact',
+    description:
+      'Register a research artifact for human review: kind=research-brief|source-dossier|evidence-table, a title, and the full markdown body. ' +
+      'The user reviews briefs before the research proceeds when the project asks for review.',
+    parameters: Type.Object({
+      kind: Type.Union([Type.Literal('research-brief'), Type.Literal('source-dossier'), Type.Literal('evidence-table')]),
+      title: Type.String({ description: 'Short human-readable title' }),
+      body: Type.String({ description: 'Full markdown body of the artifact' }),
+    }),
+    async execute(_id, params) {
+      const result = await runRegisterArtifact(
+        params as RegisterArtifactArgs,
+        deps,
+        shouldAwaitApproval(deps.reviewPolicy),
+      );
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result.approved
+              ? `Artifact registered and approved by the user: ${result.artifactId}. Continue.`
+              : `Artifact registered: ${result.artifactId}.`,
+          },
+        ],
+        details: result,
+      };
+    },
+  });
 }
 
 /** Production read path over pi SessionManager.listAll (imported lazily). */

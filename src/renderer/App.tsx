@@ -124,6 +124,34 @@ export default function App() {
       case 'tool_result':
         setActivity((prev) => [...prev, { kind: event.ok ? 'done' : 'error', text: `${event.name}: ${event.summary}` }]);
         break;
+      case 'artifact_created':
+        setArtifacts((prev) => [
+          ...prev,
+          {
+            id: event.id,
+            kind: event.kind,
+            title: event.title,
+            status: event.status === 'approved' ? ('approved' as const) : ('review' as const),
+            versions: [], // body hydrates on expand (real mode)
+            comments: [],
+          },
+        ]);
+        break;
+      case 'artifact_updated':
+        setArtifacts((prev) =>
+          prev.map((a) =>
+            a.id === event.id
+              ? {
+                  ...a,
+                  ...(event.status === 'approved' ? { status: 'approved' as const } : {}),
+                  ...(event.version > 0
+                    ? { versions: [...a.versions, { version: event.version, body: '', createdAt: Date.now() }] }
+                    : {}),
+                }
+              : a,
+          ),
+        );
+        break;
       case 'agent_end':
         setBusy(false);
         break;
@@ -417,31 +445,65 @@ export default function App() {
     [bridge],
   );
 
-  const approveArtifact = useCallback((id: string) => {
-    setArtifacts((prev) => prev.map((a) => (a.id === id ? { ...a, status: 'approved' as const } : a)));
-  }, []);
+  const approveArtifact = useCallback(
+    (id: string) => {
+      if (bridge?.artifactsApprove) {
+        bridge.artifactsApprove(id).catch(() => {});
+      }
+      setArtifacts((prev) => prev.map((a) => (a.id === id ? { ...a, status: 'approved' as const } : a)));
+    },
+    [bridge],
+  );
 
-  const commentArtifact = useCallback((id: string, text: string) => {
-    setArtifacts((prev) =>
-      prev.map((a) =>
-        a.id === id
-          ? {
-              ...a,
-              comments: [...a.comments, { id: `k${Date.now()}`, text, ts: Date.now() }],
-              // Demo of the revise-in-place loop: feedback produces the next version.
-              versions: [
-                ...a.versions,
-                {
-                  version: a.versions.length + 1,
-                  createdAt: Date.now(),
-                  body: `${a.versions.at(-1)?.body ?? ''}\n\n## Revision (after feedback)\n- Addressed: “${text}”`,
-                },
-              ],
-            }
-          : a,
-      ),
-    );
-  }, []);
+  const commentArtifact = useCallback(
+    (id: string, text: string) => {
+      if (bridge?.artifactsComment) {
+        // Real mode: comment lands on disk; the revision rides session steering.
+        const steer = `Artifact feedback for ${id}: ${text}. Please revise it and register a new version.`;
+        bridge.artifactsComment(id, text, steer).catch(() => {});
+      } else {
+        // Demo of the revise-in-place loop: feedback produces the next version.
+        setArtifacts((prev) =>
+          prev.map((a) =>
+            a.id === id
+              ? {
+                  ...a,
+                  comments: [...a.comments, { id: `k${Date.now()}`, text, ts: Date.now() }],
+                  versions: [
+                    ...a.versions,
+                    {
+                      version: a.versions.length + 1,
+                      createdAt: Date.now(),
+                      body: `${a.versions.at(-1)?.body ?? ''}\n\n## Revision (after feedback)\n- Addressed: “${text}”`,
+                    },
+                  ],
+                }
+              : a,
+          ),
+        );
+        return;
+      }
+      setArtifacts((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, comments: [...a.comments, { id: `k${Date.now()}`, text, ts: Date.now() }] } : a)),
+      );
+    },
+    [bridge],
+  );
+
+  // Hydrate a real artifact's versions when its card expands (real mode only).
+  const expandArtifact = useCallback(
+    (id: string) => {
+      if (!bridge?.artifactsHydrate) return;
+      bridge.artifactsHydrate(activeGroup === 'scratch' ? null : activeGroup, id).then((raw) => {
+        const full = raw as { versions?: { version: number; body: string; createdAt: number }[] } | null;
+        if (!full?.versions?.length) return;
+        setArtifacts((prev) =>
+          prev.map((a) => (a.id === id ? { ...a, versions: full.versions! } : a)),
+        );
+      });
+    },
+    [bridge, activeGroup],
+  );
 
   const openTranscript = useCallback(
     (id: string) => {
@@ -510,7 +572,12 @@ export default function App() {
           onOpenRun={openRunFromChat}
         />
       )}
-      <ArtifactsPane artifacts={artifacts} onApprove={approveArtifact} onComment={commentArtifact} />
+      <ArtifactsPane
+        artifacts={artifacts}
+        onApprove={approveArtifact}
+        onComment={commentArtifact}
+        onExpand={expandArtifact}
+      />
     </div>
   );
 }

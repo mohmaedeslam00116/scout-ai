@@ -1,5 +1,7 @@
 /** Types shared between main, preload and renderer. Mirrors AgentHost events. */
 
+export type ScoutArtifactKind = 'research-brief' | 'source-dossier' | 'evidence-table';
+
 export type ScoutAgentEvent =
   | { type: 'agent_start' }
   | { type: 'message_start'; role: 'user' | 'assistant' }
@@ -7,6 +9,8 @@ export type ScoutAgentEvent =
   | { type: 'message_end'; role: 'user' | 'assistant'; text: string }
   | { type: 'tool_call'; name: string; args: unknown }
   | { type: 'tool_result'; name: string; ok: boolean; summary: string }
+  | { type: 'artifact_created'; id: string; kind: ScoutArtifactKind; title: string; status: 'draft' | 'review' | 'approved' }
+  | { type: 'artifact_updated'; id: string; version: number; status: 'draft' | 'review' | 'approved' }
   | { type: 'agent_end'; reason?: string };
 
 export type ScoutState = {
