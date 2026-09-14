@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'" />
+    <title>Scout AI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="rail" aria-label="Navigation">
+        <div class="brand"><span class="brand-mark">◈</span><span>Scout AI</span></div>
+        <button class="rail-btn primary" id="new-conv">＋ New conversation</button>
+        <nav class="rail-group">
+          <button class="rail-btn">Projects</button>
+          <button class="rail-btn">Conversations</button>
+          <button class="rail-btn">Artifacts</button>
+          <button class="rail-btn">Fleet</button>
+          <button class="rail-btn">Schedules</button>
+          <button class="rail-btn" id="open-settings">Settings</button>
+        </nav>
+      </aside>
+
+      <section class="conversations">
+        <div class="col-head">Conversations</div>
+        <ul class="conv-list" id="conv-list"></ul>
+      </section>
+
+      <main class="chat">
+        <header class="chat-head">
+          <div class="chat-title">New conversation</div>
+          <div class="model-picker"><button class="chip" id="model-btn">model: none ▾</button></div>
+        </header>
+        <div class="thread" id="thread"></div>
+        <div class="activity" id="activity" hidden></div>
+        <footer class="composer">
+          <textarea id="input" rows="1" placeholder="Research anything… ( / for commands, @ for sources, + for context )"></textarea>
+          <button class="send" id="send" title="Send">↑</button>
+          <button class="stop" id="stop" title="Stop" hidden>■</button>
+        </footer>
+      </main>
+
+      <aside class="artifacts">
+        <div class="col-head">Artifacts</div>
+        <div class="artifact-empty">Research Briefs, Source Dossiers and Evidence Tables will appear here.</div>
+      </aside>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>
