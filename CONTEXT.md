@@ -67,6 +67,22 @@ code-first. The agent engine is the **pi harness** — never a hand-rolled loop.
   Conversations columns, conversation pane with composer, artifacts sidebar.
 - Event flow: pi agent events → `agentHost` → IPC `scout:event` → renderer.
 
+## Persistence layout (decision of wayfinder ticket #8, ADR-0003)
+
+Data root = Electron `userData` (`%APPDATA%\\scout-ai` on Windows):
+
+- `agent/` — Scout's own pi agentDir (auth.json, models.json, settings.json with
+  the three pinned packages, web-search.json). One-time **auth import** copies
+  `auth.json` + `models.json` from `~/.pi/agent` on first run (opt-in).
+- `projects/<id>/project.json` — name, optional bound folders, per-project
+  security settings.
+- **Project** = named workspace; binding a folder is optional. Effective cwd =
+  first bound folder, else `projects/<id>/home` — this anchors pi's cwd-keyed
+  session storage (conversation transcripts live in pi's session store).
+- `registry.json` — ordered project list.
+
+Encoded in `src/main/paths.ts` (single source for all path resolution).
+
 ## Open questions
 
 - Which LLM providers ship preconfigured, and how the model picker maps to
