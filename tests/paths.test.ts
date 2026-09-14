@@ -1,19 +1,39 @@
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
 
 import { scoutPaths } from '../src/main/paths.ts';
 
-test('scoutPaths lays out agentDir, projects and registry under the data root', () => {
-  const p = scoutPaths('C:\\Users\\Dell\\AppData\\Roaming\\scout-ai');
+describe('scoutPaths', () => {
+  const p = scoutPaths('C:\\userdata');
 
-  assert.equal(p.agentDir, 'C:\\Users\\Dell\\AppData\\Roaming\\scout-ai\\agent');
-  assert.equal(p.registryFile, 'C:\\Users\\Dell\\AppData\\Roaming\\scout-ai\\registry.json');
-  assert.ok(p.projectFile('p1').endsWith('projects\\p1\\project.json'));
-});
+  it('roots everything under userData', () => {
+    assert.equal(p.dataRoot, 'C:\\userdata');
+    assert.equal(p.agentDir, 'C:\\userdata\\agent');
+  });
 
-test('effectiveCwd prefers the first bound folder, else the project home', () => {
-  const p = scoutPaths('/data');
+  it('keeps the registry inside the projects dir (first-run flag = absence)', () => {
+    assert.equal(p.registryFile, 'C:\\userdata\\projects\\registry.json');
+  });
 
-  assert.equal(p.effectiveCwd('p1', ['D:\\research']), 'D:\\research');
-  assert.ok(p.effectiveCwd('p1', []).endsWith('projects\\p1\\home') || p.effectiveCwd('p1', []).endsWith('projects/p1/home'));
+  it('lays out a project directory per ADR-0003 + decision #16', () => {
+    assert.equal(p.projectDir('p_ab12cd34'), 'C:\\userdata\\projects\\p_ab12cd34');
+    assert.equal(p.projectFile('p_ab12cd34'), 'C:\\userdata\\projects\\p_ab12cd34\\project.json');
+    assert.equal(p.projectSessions('p_ab12cd34'), 'C:\\userdata\\projects\\p_ab12cd34\\sessions');
+    assert.equal(p.projectArtifacts('p_ab12cd34'), 'C:\\userdata\\projects\\p_ab12cd34\\artifacts');
+    assert.equal(p.projectRuns('p_ab12cd34'), 'C:\\userdata\\projects\\p_ab12cd34\\runs');
+    assert.equal(p.projectHome('p_ab12cd34'), 'C:\\userdata\\projects\\p_ab12cd34\\home');
+  });
+
+  it('mirrors the same layout for scratch at the root', () => {
+    assert.equal(p.scratchDir, 'C:\\userdata\\scratch');
+    assert.equal(p.scratchSessions, 'C:\\userdata\\scratch\\sessions');
+    assert.equal(p.scratchArtifacts, 'C:\\userdata\\scratch\\artifacts');
+    assert.equal(p.scratchRuns, 'C:\\userdata\\scratch\\runs');
+    assert.equal(p.scratchHome, 'C:\\userdata\\scratch\\home');
+  });
+
+  it('effective cwd = first bound folder, else the project home', () => {
+    assert.equal(p.effectiveCwd('p_x', []), 'C:\\userdata\\projects\\p_x\\home');
+    assert.equal(p.effectiveCwd('p_x', ['D:\\research\\feeds', 'D:\\more']), 'D:\\research\\feeds');
+  });
 });

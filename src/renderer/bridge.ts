@@ -1,4 +1,31 @@
-import type { ScoutAgentEvent, ScoutState } from '../types/shared.js';
+import type { ScoutAgentEvent, ScoutState, ScoutSendTarget } from '../types/shared.js';
+
+/** Project view as the main process returns it (registry + settings merged). */
+export interface ProjectView {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastOpenedAt: number;
+  settings: {
+    id: string;
+    name: string;
+    folders: string[];
+    reviewPolicy: string;
+    security: { preset: string; allowDomains: string[]; denyDomains: string[]; commandPolicy: string };
+    mcp: { enabledServers: string[] };
+  } | null;
+}
+
+/** One stored conversation (from pi session files, newest first). */
+export interface ConversationSummary {
+  path: string;
+  id: string;
+  name?: string;
+  created: number;
+  modified: number;
+  messageCount: number;
+  firstMessage: string;
+}
 
 /**
  * The `window.scout` bridge injected by the Electron preload. In a plain
@@ -6,10 +33,17 @@ import type { ScoutAgentEvent, ScoutState } from '../types/shared.js';
  * a scripted research run instead.
  */
 export interface ScoutBridge {
-  send(text: string): Promise<void>;
+  send(text: string, target?: ScoutSendTarget): Promise<void>;
   abort(): Promise<void>;
   state(): Promise<ScoutState>;
   onEvent(cb: (event: ScoutAgentEvent) => void): () => void;
+  projectsList?(): Promise<ProjectView[]>;
+  projectsCreate?(name: string, folders: string[]): Promise<ProjectView>;
+  projectsOpen?(projectId: string): Promise<{ settings: ProjectView['settings']; conversations: ConversationSummary[] }>;
+  projectsPatch?(projectId: string, patch: Record<string, unknown>): Promise<unknown>;
+  projectsDelete?(projectId: string): Promise<void>;
+  projectConversations?(projectId: string): Promise<ConversationSummary[]>;
+  scratchConversations?(): Promise<ConversationSummary[]>;
 }
 
 export function getBridge(): ScoutBridge | null {
@@ -17,4 +51,4 @@ export function getBridge(): ScoutBridge | null {
   return typeof candidate === 'object' && candidate !== null ? candidate : null;
 }
 
-export type { ScoutAgentEvent, ScoutState };
+export type { ScoutAgentEvent, ScoutState, ScoutSendTarget };

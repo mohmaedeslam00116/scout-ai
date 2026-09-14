@@ -1,18 +1,29 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
-import type { Conversation } from '../App.js';
+import type { Conversation, ProjectGroup } from '../App.js';
 
 export function ConversationsPane({
-  conversations,
+  groups,
   activeId,
   onSelect,
 }: {
-  conversations: Conversation[];
+  /** Ordered groups: active project first, then scratch, then the rest. */
+  groups: ProjectGroup[];
   activeId: string;
-  onSelect: (id: string) => void;
+  onSelect: (groupId: string, id: string) => void;
 }) {
   const [query, setQuery] = useState('');
-  const shown = conversations.filter((c) => c.title.toLowerCase().includes(query.toLowerCase()));
+
+  const filtered = useMemo(
+    () =>
+      groups.map((g) => ({
+        ...g,
+        conversations: g.conversations.filter((c) =>
+          c.title.toLowerCase().includes(query.toLowerCase()),
+        ),
+      })),
+    [groups, query],
+  );
 
   return (
     <section className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
@@ -27,27 +38,38 @@ export function ConversationsPane({
         />
       </div>
 
-      <ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-3">
-        {shown.map((c) => (
-          <li key={c.id}>
-            <button
-              onClick={() => onSelect(c.id)}
-              aria-current={c.id === activeId ? 'true' : undefined}
-              className={`w-full truncate rounded-full px-3 py-1.5 text-left text-[13px] transition-colors duration-150 ${
-                c.id === activeId
-                  ? 'bg-surface-3 font-medium text-ink'
-                  : 'text-ink-mid hover:bg-surface-2 hover:text-ink'
-              }`}
-              title={c.title}
-            >
-              {c.title}
-            </button>
-          </li>
+      <div className="flex-1 overflow-y-auto px-2 pb-3">
+        {filtered.map((group) => (
+          <div key={group.id} className="mb-2">
+            <div className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-ink-dim">
+              {group.name}
+            </div>
+            <ul className="flex flex-col gap-0.5">
+              {group.conversations.map((c) => (
+                <li key={c.id}>
+                  <button
+                    onClick={() => onSelect(group.id, c.id)}
+                    aria-current={c.id === activeId ? 'true' : undefined}
+                    className={`w-full truncate rounded-full px-3 py-1.5 text-left text-[13px] transition-colors duration-150 ${
+                      c.id === activeId
+                        ? 'bg-surface-3 font-medium text-ink'
+                        : 'text-ink-mid hover:bg-surface-2 hover:text-ink'
+                    }`}
+                    title={c.title}
+                  >
+                    {c.title}
+                  </button>
+                </li>
+              ))}
+              {group.conversations.length === 0 && (
+                <li className="px-3 py-1.5 text-[13px] text-ink-dim">No conversations yet.</li>
+              )}
+            </ul>
+          </div>
         ))}
-        {shown.length === 0 && (
-          <li className="px-3 py-2 text-[13px] text-ink-dim">No matches.</li>
-        )}
-      </ul>
+      </div>
     </section>
   );
 }
+
+export type { Conversation };

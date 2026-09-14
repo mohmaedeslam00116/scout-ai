@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { getBridge, type ScoutAgentEvent } from './bridge.js';
+import { getBridge, type ScoutAgentEvent, type ScoutSendTarget, type ProjectView, type ConversationSummary } from './bridge.js';
 import type { Artifact } from './artifacts.js';
 import type { FleetRun } from './fleet.js';
 import { NavRail } from './components/NavRail.js';
 import { ConversationsPane } from './components/ConversationsPane.js';
+import { ProjectsPane } from './components/ProjectsPane.js';
 import { ChatPane } from './components/ChatPane.js';
 import { ArtifactsPane } from './components/ArtifactsPane.js';
 import { FleetView } from './components/FleetView.js';
@@ -27,6 +28,15 @@ export interface ActivityItem {
 export interface Conversation {
   id: string;
   title: string;
+  /** Path of the stored session jsonl (real mode), empty in demo mode. */
+  path?: string;
+}
+
+/** A sidebar group: one per project, plus the scratch group. */
+export interface ProjectGroup {
+  id: string; // group id: 'scratch' or the project id
+  name: string;
+  conversations: Conversation[];
 }
 
 let idCounter = 0;
@@ -55,13 +65,19 @@ function demoArtifact(): Artifact {
   };
 }
 
+function titleFor(convo: ConversationSummary): string {
+  return convo.name ?? (convo.firstMessage || 'Conversation').slice(0, 60);
+}
+
 export default function App() {
   const bridge = useMemo(getBridge, []);
   const [view, setView] = useState<ViewName>('conversations');
-  const [conversations, setConversations] = useState<Conversation[]>([
-    { id: nextId(), title: 'New conversation' },
-  ]);
-  const [activeId, setActiveId] = useState<string>(() => conversations[0]?.id ?? '');
+  const [projects, setProjects] = useState<ProjectView[]>([]);
+  // Scratch-first (decision #16 §7): the app opens into scratch, projects are opt-in.
+  const [activeGroup, setActiveGroup] = useState<string>('scratch');
+  const [scratchConversations, setScratchConversations] = useState<Conversation[]>([]);
+  const [projectConversations, setProjectConversations] = useState<Record<string, Conversation[]>>({});
+  const [activeId, setActiveId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [busy, setBusy] = useState(false);
@@ -113,6 +129,28 @@ export default function App() {
   useEffect(() => {
     activityRef.current?.scrollTo({ top: activityRef.current.scrollHeight });
   }, [activity]);
+
+  // Load projects (real mode) once.
+  useEffect(() => {
+    if (!bridge?.projectsList) return;
+    bridge
+      .projectsList()
+      .then(setProjects)
+      .catch(() => setProjects([]));
+  }, [bridge]);
+
+  // Load scratch conversations (real mode) once.
+  useEffect(() => {
+    if (!bridge?.scratchConversations) return;
+    bridge
+      .scratchConversations()
+      .then((list) =>
+        setScratchConversations(
+          list.map((c) => ({ id: c.path, path: c.path, title: titleFor(c) })),
+        ),
+      )
+      .catch(() => setScratchConversations([]));
+  }, [bridge]);
 
   const send = useCallback(
     async (text: string) => {
@@ -172,21 +210,129 @@ export default function App() {
         return;
       }
       try {
-        await bridge.send(text);
+        const target: ScoutSendTarget =
+          activeGroup === 'scratch' ? { kind: 'scratch' } : { kind: 'project', projectId: activeGroup };
+        await bridge.send(text, target);
+        // Refresh the conversation list of the active group (new session file).
+        if (activeGroup === 'scratch' && bridge.scratchConversations) {
+          const list = await bridge.scratchConversations();
+          setScratchConversations(list.map((c) => ({ id: c.path, path: c.path, title: titleFor(c) })));
+        } else if (bridge.projectConversations) {
+          const list = await bridge.projectConversations(activeGroup);
+          setProjectConversations((prev) => ({
+            ...prev,
+            [activeGroup]: list.map((c) => ({ id: c.path, path: c.path, title: titleFor(c) })),
+          }));
+        }
       } catch (err) {
         setMessages((prev) => [...prev, { role: 'assistant', text: `Error: ${(err as Error).message}` }]);
         setBusy(false);
       }
     },
-    [bridge],
+    [bridge, activeGroup],
   );
 
   const newConversation = useCallback(() => {
-    const conv = { id: nextId(), title: 'New conversation' };
-    setConversations((prev) => [conv, ...prev]);
-    setActiveId(conv.id);
+    // Starts fresh: the next send in this group creates a new conversation.
     setMessages([]);
     setActivity([]);
+    setActiveId('');
+  }, []);
+
+  const createProject = useCallback(
+    (name: string) => {
+      if (!bridge?.projectsCreate) {
+        // Demo mode: keep a local pseudo project so the flow is reviewable.
+        const id = `demo-${Date.now()}`;
+        setProjects((prev) => [
+          { id, name, createdAt: Date.now(), lastOpenedAt: Date.now(), settings: null },
+          ...prev,
+        ]);
+        return;
+      }
+      bridge.projectsCreate(name, []).then((created) => {
+        setProjects((prev) => [created, ...prev]);
+      });
+    },
+    [bridge],
+  );
+
+  const deleteProject = useCallback(
+    (id: string) => {
+      if (!bridge?.projectsDelete) {
+        setProjects((prev) => prev.filter((p) => p.id !== id));
+      } else {
+        bridge.projectsDelete(id).then(() => {
+          setProjects((prev) => prev.filter((p) => p.id !== id));
+        });
+      }
+      if (activeGroup === id) {
+        setActiveGroup('scratch');
+        setView('conversations');
+      }
+      setProjectConversations((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    },
+    [bridge, activeGroup],
+  );
+
+  const renameProject = useCallback(
+    (id: string, name: string) => {
+      if (!bridge?.projectsPatch) {
+        setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, name } : p)));
+        return;
+      }
+      bridge.projectsPatch(id, { name }).then(() => {
+        setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, name } : p)));
+      });
+    },
+    [bridge],
+  );
+
+  const openProject = useCallback(
+    (id: string) => {
+      setActiveGroup(id);
+      setView('conversations');
+      if (!bridge?.projectsOpen) return; // demo mode: group stays empty
+      bridge
+        .projectsOpen(id)
+        .then(({ conversations }) => {
+          setProjectConversations((prev) => ({
+            ...prev,
+            [id]: conversations.map((c) => ({ id: c.path, path: c.path, title: titleFor(c) })),
+          }));
+        })
+        .catch(() => setProjectConversations((prev) => ({ ...prev, [id]: [] })));
+    },
+    [bridge],
+  );
+
+  const groups: ProjectGroup[] = useMemo(() => {
+    const result: ProjectGroup[] = projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      conversations: projectConversations[p.id] ?? [],
+    }));
+    result.push({ id: 'scratch', name: 'Scratch', conversations: scratchConversations });
+    return result;
+  }, [projects, projectConversations, scratchConversations]);
+
+  const allConversations = useMemo(
+    () => groups.flatMap((g) => g.conversations),
+    [groups],
+  );
+  const active = allConversations.find((c) => c.id === activeId);
+  const activeGroupName = groups.find((g) => g.id === activeGroup)?.name ?? 'Scratch';
+
+  const selectConversation = useCallback((groupId: string, id: string) => {
+    setActiveGroup(groupId);
+    setActiveId(id);
+    setMessages([]);
+    setActivity([]);
+    // T02 will restore the transcript here; T01 selects and clears.
   }, []);
 
   const approveArtifact = useCallback((id: string) => {
@@ -240,21 +386,29 @@ export default function App() {
     setRuns((prev) => prev.map((r) => (r.id === id && r.state === 'running' ? { ...r, state: 'stopped' as const } : r)));
   }, []);
 
-  const openRunFromChat = useCallback((id: string) => {
+  const openRunFromChat = useCallback(() => {
     setView('fleet');
   }, []);
-
-  const active = conversations.find((c) => c.id === activeId);
 
   return (
     <div className="flex h-full">
       <NavRail active={view} onSelect={setView} onNewConversation={newConversation} />
-      <ConversationsPane conversations={conversations} activeId={activeId} onSelect={setActiveId} />
+      {view === 'projects' ? (
+        <ProjectsPane
+          projects={projects}
+          onCreate={createProject}
+          onDelete={deleteProject}
+          onOpen={openProject}
+          onRename={renameProject}
+        />
+      ) : (
+        <ConversationsPane groups={groups} activeId={activeId} onSelect={selectConversation} />
+      )}
       {view === 'fleet' ? (
         <FleetView runs={runs} onOpenTranscript={openTranscript} onSteer={steerRun} onStop={stopRun} />
       ) : (
         <ChatPane
-          title={active?.title ?? 'New conversation'}
+          title={active?.title ?? activeGroupName}
           messages={messages}
           activity={activity}
           busy={busy}

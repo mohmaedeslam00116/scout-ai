@@ -14,3 +14,8 @@ export type ScoutState = {
   messages: { role: string; text: string }[];
   activity: { kind: string; text: string; ts: number }[];
 };
+
+/** Which conversation context a send (or listing) addresses (decision #16). */
+export type ScoutSendTarget =
+  | { kind: 'scratch'; fresh?: boolean }
+  | { kind: 'project'; projectId: string; fresh?: boolean };

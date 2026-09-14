@@ -102,8 +102,61 @@ test('creates one session per cwd and reuses it', async () => {
       return fakeSession(async () => {});
     },
   );
-  await host.send('a', '/proj/one');
-  await host.send('b', '/proj/one');
-  await host.send('c', '/proj/two');
+  await host.send('a', { cwd: '/proj/one' });
+  await host.send('b', { cwd: '/proj/one' });
+  await host.send('c', { cwd: '/proj/two' });
   assert.equal(created, 2);
+});
+
+test('scratch target is the default send destination', async () => {
+  const requests: { cwd: string; sessionDir?: string; fresh?: boolean }[] = [];
+  const host = new AgentHost(
+    { emit: () => {} },
+    async (req) => {
+      requests.push(req);
+      return fakeSession(async () => {});
+    },
+    { scratch: { cwd: 'C:\\ud\\scratch\\home', sessionDir: 'C:\\ud\\scratch\\sessions' } },
+  );
+  await host.send('hello');
+  assert.deepEqual(requests, [{ cwd: 'C:\\ud\\scratch\\home', sessionDir: 'C:\\ud\\scratch\\sessions' }]);
+});
+
+test('target options: per-sessionDir reuse and fresh recreation', async () => {
+  let created = 0;
+  const host = new AgentHost(
+    { emit: () => {} },
+    async () => {
+      created++;
+      return fakeSession(async () => {});
+    },
+  );
+  const target = { cwd: 'C:\\proj', sessionDir: 'C:\\proj\\sessions' };
+  await host.send('a', target);
+  await host.send('b', target);
+  assert.equal(created, 1); // same target reuses the session
+  await host.send('c', { ...target, fresh: true });
+  assert.equal(created, 2); // fresh forces a new session
+  await host.send('d', { cwd: 'C:\\proj2', sessionDir: 'C:\\proj\\sessions' });
+  assert.equal(created, 3); // different cwd = different session
+});
+
+test('listConversations sorts by modified desc and maps to summaries', async () => {
+  const host = new AgentHost(
+    { emit: () => {} },
+    async () => fakeSession(async () => {}),
+    {
+      lister: async (sessionDir) =>
+        sessionDir === 'S'
+          ? [
+              { path: 'a.jsonl', id: 'a', created: 1, modified: 100, messageCount: 2, firstMessage: 'old' },
+              { path: 'b.jsonl', id: 'b', name: 'Named', created: 2, modified: 200, messageCount: 5, firstMessage: 'new' },
+            ]
+          : [],
+    },
+  );
+  const convos = await host.listConversations('S');
+  assert.equal(convos[0]?.id, 'b'); // newest first
+  assert.equal(convos[0]?.name, 'Named');
+  assert.equal(convos[1]?.firstMessage, 'old');
 });
