@@ -23,7 +23,25 @@ export type ScoutAgentEvent =
   | { type: 'artifact_updated'; id: string; version: number; status: 'draft' | 'review' | 'approved' }
   | { type: 'permission_request'; id: string; tool: string; action: ScoutPermissionAction }
   | { type: 'permission_resolved'; id: string; verdict: 'allow' | 'deny' }
+  | { type: 'fleet_run_update'; runs: FleetRunState[] }
   | { type: 'agent_end'; reason?: string };
+
+/** One pi-subagents child run as a Fleet card (T05, decision #15 §2). */
+export type FleetRunStatus = 'queued' | 'running' | 'done' | 'stopped' | 'error';
+
+export interface FleetRunState {
+  runId: string;
+  agent: string;
+  task: string;
+  status: FleetRunStatus;
+  currentTool?: string;
+  toolCount?: number;
+  tokens?: number;
+  durationMs?: number;
+  error?: string;
+  /** recentOutput lines from AgentProgress (live view; full file on hydrate). */
+  output: string[];
+}
 
 export type ScoutState = {
   busy: boolean;

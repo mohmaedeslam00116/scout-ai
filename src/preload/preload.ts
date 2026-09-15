@@ -46,4 +46,11 @@ contextBridge.exposeInMainWorld('scout', {
     ipcRenderer.invoke('scout:permissions:resolve', id, verdict),
   widenPermissionScope: (target: unknown, action: unknown, scope: 'domain' | 'wildcard' | 'server') =>
     ipcRenderer.invoke('scout:permissions:scope', target, action, scope),
+
+  // Fleet (T05)
+  fleetRuns: (projectId: string | null) => ipcRenderer.invoke('scout:fleet_runs:list', projectId),
+  fleetTranscript: (projectId: string | null, runId: string) =>
+    ipcRenderer.invoke('scout:fleet_runs:transcript', projectId, runId),
+  fleetAction: (runId: string, action: 'steer' | 'stop', message?: string) =>
+    ipcRenderer.invoke('scout:fleet_action', runId, action, message),
 });

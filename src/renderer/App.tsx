@@ -155,6 +155,29 @@ export default function App() {
           ),
         );
         break;
+      case 'fleet_run_update':
+        // Upsert by runId (decision #15 §2): live cards mirror AgentProgress.
+        setRuns((prev) => {
+          const next = [...prev];
+          for (const run of event.runs) {
+            const i = next.findIndex((r) => r.id === run.runId);
+            const card = {
+              id: run.runId,
+              agent: run.agent,
+              task: run.task,
+              state: run.status,
+              transcript: run.output,
+              ...(run.currentTool ? { currentTool: run.currentTool } : {}),
+              ...(run.tokens !== undefined ? { tokens: run.tokens } : {}),
+              ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
+              ...(run.error ? { error: run.error } : {}),
+            };
+            if (i >= 0) next[i] = { ...next[i]!, ...card };
+            else next.unshift(card);
+          }
+          return next;
+        });
+        break;
       case 'agent_end':
         setBusy(false);
         break;
@@ -578,27 +601,95 @@ export default function App() {
   const openTranscript = useCallback(
     (id: string) => {
       const run = runs.find((r) => r.id === id);
-      if (run) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'user',
-            text: `Transcript of ${run.agent} (${run.state}):\n${run.transcript.join('\n') || '(empty)'}`,
-          },
-        ]);
+      if (!run) return;
+      const show = (body: string) => {
+        setMessages((prev) => [...prev, { role: 'user', text: `Transcript of ${run.agent} (${run.state}):\n${body || '(empty)'}` }]);
         setView('conversations');
+      };
+      // Real mode: the whole persisted JSONL (decision #15 §5), not pi's
+      // 50-line recentOutput window. Demo: what the card streamed.
+      if (bridge?.fleetTranscript) {
+        bridge
+          .fleetTranscript(activeGroup === 'scratch' ? null : activeGroup, id)
+          .then((raw) => {
+            const records = raw as { type: string; lines?: string[]; status?: string; error?: string }[];
+            const lines = records.flatMap((r) => {
+              if (r.type === 'output') return r.lines ?? [];
+              if (r.type === 'control') return [`[control] ${r.type}`];
+              return [`[${r.status ?? 'progress'}]`];
+            });
+            show(lines.join('\n'));
+          })
+          .catch(() => show(run.transcript.join('\n')));
+        return;
       }
+      show(run.transcript.join('\n'));
     },
-    [runs],
+    [runs, bridge, activeGroup],
   );
 
-  const steerRun = useCallback((id: string, text: string) => {
-    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, transcript: [...r.transcript, `↳ steered: ${text}`] } : r)));
-  }, []);
+  /** Steer a child run (T05): real IPC parent-mediated; demo appends locally. */
+  const steerRun = useCallback(
+    (id: string, text: string) => {
+      if (bridge?.fleetAction) {
+        bridge.fleetAction(id, 'steer', text).catch(() => {});
+      }
+      setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, transcript: [...r.transcript, `↳ Steer (via Scout): ${text}`] } : r)));
+    },
+    [bridge],
+  );
 
-  const stopRun = useCallback((id: string) => {
-    setRuns((prev) => prev.map((r) => (r.id === id && r.state === 'running' ? { ...r, state: 'stopped' as const } : r)));
-  }, []);
+  /** Stop one child run: real interrupt via the parent; demo flips the card. */
+  const stopRun = useCallback(
+    (id: string) => {
+      if (bridge?.fleetAction) {
+        bridge.fleetAction(id, 'stop').catch(() => {});
+      }
+      setRuns((prev) => prev.map((r) => (r.id === id && r.state === 'running' ? { ...r, state: 'stopped' as const } : r)));
+    },
+    [bridge],
+  );
+
+  // Hydrate done/stopped runs from disk on Fleet view mount (decision #15 §5).
+  useEffect(() => {
+    if (view !== 'fleet' || !bridge?.fleetRuns) return;
+    bridge
+      .fleetRuns(activeGroup === 'scratch' ? null : activeGroup)
+      .then((raw) => {
+        const stored = raw as {
+          runId: string;
+          agent: string;
+          task: string;
+          status: string;
+          output?: string[];
+          tokens?: number;
+          durationMs?: number;
+          error?: string;
+        }[];
+        setRuns((prev) => {
+          const next = [...prev];
+          for (const run of stored) {
+            const state =
+              run.status === 'completed' ? ('done' as const) : run.status === 'failed' ? ('error' as const) : run.status === 'detached' ? ('stopped' as const) : ('running' as const);
+            const card = {
+              id: run.runId,
+              agent: run.agent,
+              task: run.task,
+              state,
+              transcript: run.output ?? [],
+              ...(run.tokens !== undefined ? { tokens: run.tokens } : {}),
+              ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
+              ...(run.error ? { error: run.error } : {}),
+            };
+            const i = next.findIndex((r) => r.id === run.runId);
+            if (i >= 0) next[i] = { ...next[i]!, ...card };
+            else next.push(card);
+          }
+          return next;
+        });
+      })
+      .catch(() => {});
+  }, [view, bridge, activeGroup]);
 
   const openRunFromChat = useCallback(() => {
     setView('fleet');

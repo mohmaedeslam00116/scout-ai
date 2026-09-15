@@ -409,3 +409,166 @@ describe('permission gate (T04, decision #13)', () => {
     assert.ok(ran && ran.ok, 'allowed tool executed');
   });
 });
+
+describe('fleet mapping (T05, decision #15)', () => {
+  /**
+   * Harness whose fake session replays a raw-event script once prompt() is
+   * called (mirroring the real subscription timing), then holds until release.
+   */
+  function fleetHarness(script: (emit: (e: unknown) => void) => void = () => {}) {
+    const listeners: ((e: unknown) => void)[] = [];
+    let releasePrompt: (() => void) | null = null;
+    let streaming = false;
+    const steered: string[] = [];
+    const session: PiLikeSession = {
+      subscribe(listener: (e: unknown) => void) {
+        listeners.push(listener);
+        return () => {
+          const i = listeners.indexOf(listener);
+          if (i >= 0) listeners.splice(i, 1);
+        };
+      },
+      async prompt() {
+        streaming = true;
+        script((raw) => listeners.forEach((l) => l(raw)));
+        await new Promise<void>((resolve) => {
+          releasePrompt = resolve;
+        });
+        streaming = false;
+      },
+      async abort() {},
+      get isStreaming() {
+        return streaming;
+      },
+      steer: (text: string) => {
+        steered.push(text);
+      },
+    } as unknown as PiLikeSession;
+    const events: ScoutAgentEvent[] = [];
+    const host = new AgentHost(
+      { emit: (_c, e) => events.push(e) },
+      async () => session,
+      { scratch: { cwd: 'C', sessionDir: 'S' } },
+    );
+    const emit = (raw: unknown) => listeners.forEach((l) => l(raw));
+    const release = () => releasePrompt?.();
+    return { host, events, emit, steered, release };
+  }
+
+  function waitForEvent(events: ScoutAgentEvent[], type: string): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        if (events.some((e) => e.type === type)) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 5);
+    });
+  }
+
+  const progressDetails = (status: string, extra: Record<string, unknown> = {}) => ({
+    mode: 'foreground',
+    results: [],
+    progress: [
+      {
+        index: 0,
+        agent: 'researcher',
+        status,
+        task: 'scan pi.dev',
+        currentTool: 'web_search',
+        recentOutput: ['searching: exa x3'],
+        toolCount: 2,
+        tokens: 1200,
+        durationMs: 4000,
+        ...extra,
+      },
+    ],
+  });
+
+  it('maps subagent tool_execution_update details into fleet_run_update', async () => {
+    let emit!: (e: unknown) => void;
+    const { host, events, release } = fleetHarness((e) => (emit = e));
+    const running = host.send('delegate research');
+    await new Promise((r) => setTimeout(r, 20)); // let prompt() start
+    // Prompt has the session now; emit the live progress like pi-subagents.
+    emit({
+      type: 'tool_execution_update',
+      toolCallId: 't1',
+      toolName: 'subagent',
+      args: {},
+      partialResult: { details: progressDetails('running') },
+    });
+    await waitForEvent(events, 'fleet_run_update');
+
+    const update = events.find((e) => e.type === 'fleet_run_update') as Extract<ScoutAgentEvent, { type: 'fleet_run_update' }>;
+    assert.equal(update.runs.length, 1);
+    const run = update.runs[0]!;
+    assert.equal(run.runId, 'researcher:0');
+    assert.equal(run.agent, 'researcher');
+    assert.equal(run.status, 'running');
+    assert.equal(run.currentTool, 'web_search');
+    assert.deepEqual(run.output, ['searching: exa x3']);
+
+    // Progress continues: upsert semantics are the renderer's job; the host
+    // just mirrors the AgentProgress array each time.
+    emit({
+      type: 'tool_execution_update',
+      toolCallId: 't1',
+      toolName: 'subagent',
+      args: {},
+      partialResult: { details: progressDetails('completed', { tokens: 2400 }) },
+    });
+    const last = events.filter((e) => e.type === 'fleet_run_update').at(-1) as Extract<ScoutAgentEvent, { type: 'fleet_run_update' }>;
+    assert.equal(last.runs[0]?.status, 'done');
+
+    release();
+    await running;
+  });
+
+  it('ignores updates from tools that are not subagent', async () => {
+    const { host, events, emit, release } = fleetHarness();
+    const running = host.send('plain tool');
+    emit({ type: 'tool_execution_update', toolCallId: 't2', toolName: 'web_search', args: {}, partialResult: { details: progressDetails('running') } });
+    (host as unknown as { sessions: Map<string, PiLikeSession> }).sessions.set('C\u0000S', {
+      subscribe: () => () => {},
+      prompt: async () => {},
+      abort: async () => {},
+      isStreaming: false,
+    } as unknown as PiLikeSession);
+    // Give the event loop a tick to observe no emission.
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(!events.some((e) => e.type === 'fleet_run_update'));
+    release();
+    await running;
+  });
+
+  it('steer sends a parent-mediated message labeled via Scout', async () => {
+    let emit!: (e: unknown) => void;
+    const { host, events, steered, release } = fleetHarness((e) => (emit = e));
+    const running = host.send('delegate');
+    await new Promise((r) => setTimeout(r, 20)); // let prompt() start
+    emit({ type: 'tool_execution_update', toolCallId: 't1', toolName: 'subagent', args: {}, partialResult: { details: progressDetails('running') } });
+    await waitForEvent(events, 'fleet_run_update');
+    host.steerRun('researcher:0', 'focus on ADRs');
+    assert.equal(steered.length, 1);
+    assert.match(steered[0]!, /researcher:0/);
+    assert.match(steered[0]!, /focus on ADRs/);
+    release();
+    await running;
+  });
+
+  it('stopRun injects the interrupt steering message', async () => {
+    let emit!: (e: unknown) => void;
+    const { host, events, steered, release } = fleetHarness((e) => (emit = e));
+    const running = host.send('delegate');
+    await new Promise((r) => setTimeout(r, 20)); // let prompt() start
+    emit({ type: 'tool_execution_update', toolCallId: 't1', toolName: 'subagent', args: {}, partialResult: { details: progressDetails('running') } });
+    await waitForEvent(events, 'fleet_run_update');
+    host.stopRun('researcher:0');
+    assert.equal(steered.length, 1);
+    assert.match(steered[0]!, /interrupt/i);
+    assert.match(steered[0]!, /researcher:0/);
+    release();
+    await running;
+  });
+});

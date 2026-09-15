@@ -39,6 +39,11 @@ function RunCard({
             {run.task}
           </span>
         </span>
+        <span className="shrink-0 font-mono text-[10px] text-ink-dim">
+          {run.currentTool ? `${run.currentTool} · ` : ''}
+          {run.tokens !== undefined ? `${run.tokens.toLocaleString()} tok · ` : ''}
+          {run.durationMs !== undefined ? `${Math.round(run.durationMs / 1000)}s` : ''}
+        </span>
         <span className={`badge ${STATE_BADGE[run.state]}`}>{STATE_LABELS[run.state]}</span>
       </button>
 

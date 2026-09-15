@@ -54,6 +54,9 @@ export interface ScoutBridge {
   artifactsComment?(artifactId: string, text: string, steerText?: string): Promise<void>;
   resolvePermission?(id: string, verdict: 'allow' | 'deny'): Promise<void>;
   widenPermissionScope?(target: unknown, action: unknown, scope: 'domain' | 'wildcard' | 'server'): Promise<unknown>;
+  fleetRuns?(projectId: string | null): Promise<unknown[]>;
+  fleetTranscript?(projectId: string | null, runId: string): Promise<unknown[]>;
+  fleetAction?(runId: string, action: 'steer' | 'stop', message?: string): Promise<void>;
   artifactsRegister?(args: { kind: string; title: string; body: string }, projectId: string | null, policy: string): Promise<unknown>;
 }
 

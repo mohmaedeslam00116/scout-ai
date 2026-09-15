@@ -9,6 +9,7 @@ import { buildArtifactTool } from './agentHost.ts';
 import type { ProceedController } from './proceedGate.ts';
 import { scoutPaths } from './paths.ts';
 import { widenScope, DEFAULT_GRANT, type ProjectRules } from './permissionEngine.ts';
+import { FleetRunStore } from './fleetStore.ts';
 import type { ProjectSettings } from './projectStore.ts';
 import type { ScoutPermissionAction, ScoutSendTarget } from '../types/shared.ts';
 
@@ -118,6 +119,15 @@ app.whenReady().then(async () => {
       // scratch conversation context.
       scratch: { cwd: paths.scratchHome, sessionDir: paths.scratchSessions },
       permissionRules: permissionRulesProvider,
+      // Fleet transcripts co-locate with the project that produced them
+      // (decision #15 §5): projects/<id>/runs, or scratch/runs.
+      fleetRootFor: (target) => {
+        if (!projects) return paths.scratchRuns;
+        for (const view of projects.list()) {
+          if (paths.projectSessions(view.id) === target.sessionDir) return paths.projectRuns(view.id);
+        }
+        return paths.scratchRuns;
+      },
     },
   );
   projects = new ProjectService(paths, host);
@@ -202,6 +212,21 @@ app.whenReady().then(async () => {
   // Permissions (T04, decision #13): resolve a held permission card.
   ipcMain.handle('scout:permissions:resolve', (_e, id: string, verdict: 'allow' | 'deny') => {
     host?.resolvePermission(id, verdict);
+  });
+
+  // Fleet (T05, decision #15): run transcripts + steer/stop actions.
+  ipcMain.handle('scout:fleet_runs:list', (_e, projectId: string | null) => {
+    const root = projectId ? paths.projectRuns(projectId) : paths.scratchRuns;
+    return new FleetRunStore(root).list();
+  });
+  ipcMain.handle('scout:fleet_runs:transcript', (_e, projectId: string | null, runId: string) => {
+    const root = projectId ? paths.projectRuns(projectId) : paths.scratchRuns;
+    return new FleetRunStore(root).transcript(runId);
+  });
+  ipcMain.handle('scout:fleet_action', (_e, runId: string, action: 'steer' | 'stop', message?: string) => {
+    if (!host) return;
+    if (action === 'steer') host.steerRun(runId, message ?? '');
+    else host.stopRun(runId);
   });
 
   // Scope widening from the permission card's editor: mutate rules and persist

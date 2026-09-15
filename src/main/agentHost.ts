@@ -26,7 +26,9 @@ import {
   DEFAULT_GRANT,
   type ProjectRules,
 } from './permissionEngine.ts';
-import type { ScoutAgentEvent, ScoutPermissionAction, ScoutState } from '../types/shared.ts';
+import { FleetRunStore } from './fleetStore.ts';
+import type { ScoutAgentEvent, ScoutPermissionAction, ScoutState, FleetRunState, FleetRunStatus } from '../types/shared.ts';
+// (shared types imported above together with the permission engine)
 
 export type { ScoutAgentEvent, ScoutState };
 
@@ -87,6 +89,8 @@ export interface HostOptions {
   tools?: ToolProvider;
   /** Rules for the target being sent to (T04); scratch gets DEFAULT_GRANT. */
   permissionRules?: (target: SendTarget) => ProjectRules;
+  /** Runs root for the target (T05 persistence). Null/absent = no persistence. */
+  fleetRootFor?: (target: SendTarget) => string | null;
 }
 
 export type SessionFactory = (target: SendTarget) => Promise<PiLikeSession>;
@@ -110,6 +114,12 @@ export class AgentHost {
   private sessionPromise: Promise<PiLikeSession> | null = null;
   /** Pending permission requests (T04): id → resolution surface. */
   private readonly pendingPermissions = new Map<string, { resolve: (verdict: 'allow' | 'deny') => void; request: PermissionRequestPayload }>();
+  /** Per-root Fleet transcript stores (T05). */
+  private readonly fleetStores = new Map<string, FleetRunStore>();
+  /** Runs root of the run in flight (Fleet persistence attribution). */
+  private activeFleetRoot: string | null = null;
+  /** Lines of rolling recentOutput already persisted, per runId. */
+  private readonly fleetOutputSeen = new Map<string, number>();
 
   constructor(sink: HostSink, createSession: SessionFactory, options: HostOptions = {}) {
     this.sink = sink;
@@ -217,8 +227,12 @@ export class AgentHost {
   }
 
   private mapAndLog(raw: unknown): ScoutAgentEvent[] {
+    // Fleet mapping first (T05, decision #15 §2): pi-subagents streams child
+    // state through the subagent tool's onUpdate → tool_execution_update,
+    // which mapSessionEvent maps to null — the raw event is the carrier.
+    const fleet = this.mapFleetUpdate(raw);
     const mapped = mapSessionEvent(raw);
-    if (!mapped) return [];
+    if (!mapped) return fleet ? [fleet] : [];
     if (mapped.type === 'message_end' && mapped.role === 'assistant') {
       this.messages.push({ role: 'assistant', text: mapped.text });
     } else if (mapped.type === 'tool_call') {
@@ -226,7 +240,128 @@ export class AgentHost {
     } else if (mapped.type === 'tool_result') {
       this.log(mapped.ok ? 'done' : 'error', `${mapped.name}: ${mapped.summary}`);
     }
-    return [mapped];
+    return fleet ? [mapped, fleet] : [mapped];
+  }
+
+  /** FleetRunStore for the run in flight; null outside sends or without a root. */
+  private fleetStore(): FleetRunStore | null {
+    const root = this.activeFleetRoot;
+    if (!root) return null;
+    let store = this.fleetStores.get(root);
+    if (!store) {
+      store = new FleetRunStore(root);
+      this.fleetStores.set(root, store);
+    }
+    return store;
+  }
+
+  /**
+   * Map a pi tool_execution_update for the subagent tool into a
+   * fleet_run_update event, persisting each AgentProgress entry. Returns null
+   * for anything that is not live subagent progress.
+   */
+  private mapFleetUpdate(raw: unknown): ScoutAgentEvent | null {
+    const event = raw as { type?: string; toolName?: string; partialResult?: { details?: unknown } };
+    if (event?.type !== 'tool_execution_update' || event.toolName !== 'subagent') return null;
+    const details = event.partialResult?.details as { progress?: unknown[] } | undefined;
+    const progress = details?.progress;
+    if (!Array.isArray(progress)) return null;
+    const runs: FleetRunState[] = [];
+    const store = this.fleetStore();
+    for (const entry of progress) {
+      const p = entry as {
+        index?: number;
+        agent?: string;
+        status?: string;
+        task?: string;
+        currentTool?: string;
+        recentOutput?: unknown;
+        toolCount?: number;
+        tokens?: number;
+        durationMs?: number;
+        error?: string;
+      };
+      if (typeof p.agent !== 'string' || typeof p.index !== 'number') continue;
+      const status = mapRunStatus(p.status);
+      if (!status) continue;
+      const output = Array.isArray(p.recentOutput) ? p.recentOutput.map(String) : [];
+      const run: FleetRunState = {
+        runId: `${p.agent}:${p.index}`,
+        agent: p.agent,
+        task: typeof p.task === 'string' ? p.task : '',
+        status,
+        ...(p.currentTool ? { currentTool: p.currentTool } : {}),
+        ...(p.toolCount !== undefined ? { toolCount: p.toolCount } : {}),
+        ...(p.tokens !== undefined ? { tokens: p.tokens } : {}),
+        ...(p.durationMs !== undefined ? { durationMs: p.durationMs } : {}),
+        ...(p.error ? { error: p.error } : {}),
+        output,
+      };
+      runs.push(run);
+      store?.append({
+        ts: Date.now(),
+        runId: run.runId,
+        agent: run.agent,
+        status: mapStoreStatus(p.status),
+        task: run.task,
+        ...(p.currentTool ? { currentTool: p.currentTool } : {}),
+        ...(p.toolCount !== undefined ? { toolCount: p.toolCount } : {}),
+        ...(p.tokens !== undefined ? { tokens: p.tokens } : {}),
+        ...(p.durationMs !== undefined ? { durationMs: p.durationMs } : {}),
+        ...(p.error ? { error: p.error } : {}),
+      });
+      // recentOutput is a rolling window: persist only the lines newer than
+      // what's already on disk, or the transcript fills with duplicates.
+      if (output.length > 0) {
+        const seen = this.fleetOutputSeen.get(run.runId) ?? 0;
+        const fresh = output.length > seen ? output.slice(seen) : [];
+        this.fleetOutputSeen.set(run.runId, Math.max(seen, output.length));
+        if (fresh.length > 0) store?.appendOutput(run.runId, fresh);
+      }
+    }
+    if (runs.length === 0) return null;
+    return { type: 'fleet_run_update', runs };
+  }
+
+  /**
+   * Steer a child run (T05, decision #15 §4): parent-mediated. A steering
+   * message to the parent session, labeled honestly as via Scout; the parent
+   * delivers it to the child per its own judgment.
+   */
+  steerRun(runId: string, message: string): void {
+    const text = `Fleet steer for ${runId} (via Scout): ${message}`;
+    this.recordControl(runId, 'scout', 'parent', 'steer', message);
+    this.log('steer', text);
+    this.steerActive(text);
+  }
+
+  /**
+   * Stop one child run (T05, decision #15 §3): the parent injects the
+   * interrupt as a management action on its next turn boundary (pi-subagents
+   * executes `subagent action=interrupt id=<runId>`). The composer's Stop
+   * aborts the parent outright (abort()).
+   */
+  stopRun(runId: string): void {
+    const text = `Interrupt subagent run ${runId} now (subagent action=interrupt id=${runId}).`;
+    this.recordControl(runId, 'scout', 'parent', 'interrupt');
+    this.log('stop', text);
+    // The user ended this child: mark the run terminal on disk so it hydrates
+    // as stopped after restart instead of running forever.
+    this.fleetStore()?.markStopped(runId, 'detached', 'Stopped by user in Scout');
+    this.steerActive(text);
+  }
+
+  private recordControl(runId: string, from: string, to: string, reason: string, message?: string): void {
+    const store = this.fleetStore();
+    if (!store) return;
+    store.appendControl(runId, { from, to, reason, ...(message ? { message } : {}) });
+  }
+
+  /** Queue a steering message on every streaming session (shared by steer/stop). */
+  private steerActive(text: string): void {
+    for (const session of this.sessions.values()) {
+      if (session.isStreaming) session.steer?.(text);
+    }
   }
 
   async send(text: string, target?: SendTarget): Promise<void> {
@@ -241,6 +376,7 @@ export class AgentHost {
         : { cwd: this.defaultCwd() });
 
     this.busy = true;
+    this.activeFleetRoot = this.options.fleetRootFor?.(resolved) ?? null;
     this.messages.push({ role: 'user', text: question });
     this.log('prompt', question);
     this.sink.emit('scout:event', { type: 'agent_start' });
@@ -255,6 +391,8 @@ export class AgentHost {
       this.sink.emit('scout:event', { type: 'message_end', role: 'assistant', text: `Error: ${message}` });
     } finally {
       this.busy = false;
+      this.activeFleetRoot = null;
+      this.fleetOutputSeen.clear();
       this.sink.emit('scout:event', { type: 'agent_end' });
     }
   }
@@ -379,6 +517,31 @@ type PermissionHook = (
 ) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
 let permissionSeq = 0;
+
+/** AgentProgress.status → Scout card status (decision #15 §2). */
+function mapRunStatus(status: string | undefined): FleetRunStatus | null {
+  switch (status) {
+    case 'pending':
+      return 'queued';
+    case 'running':
+      return 'running';
+    case 'completed':
+      return 'done';
+    case 'failed':
+      return 'error';
+    case 'detached':
+      return 'stopped';
+    default:
+      return null; // unknown statuses are skipped, not guessed
+  }
+}
+
+/** AgentProgress.status → store record status (same vocabulary). */
+function mapStoreStatus(status: string | undefined): 'pending' | 'running' | 'completed' | 'failed' | 'detached' {
+  return status === 'pending' || status === 'running' || status === 'completed' || status === 'failed' || status === 'detached'
+    ? status
+    : 'running';
+}
 
 function describeAction(toolName: string, action: ScoutPermissionAction): string {
   switch (action.kind) {

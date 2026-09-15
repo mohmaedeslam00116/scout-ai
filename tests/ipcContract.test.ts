@@ -66,4 +66,11 @@ describe('scout IPC contract', () => {
       assert.ok(handled.has(channel), `main missing ${channel}`);
     }
   });
+
+  it('fleet channels exist (T05, decision #15)', () => {
+    for (const channel of ['scout:fleet_runs:list', 'scout:fleet_runs:transcript', 'scout:fleet_action']) {
+      assert.ok(invoked.has(channel), `preload missing ${channel}`);
+      assert.ok(handled.has(channel), `main missing ${channel}`);
+    }
+  });
 });
