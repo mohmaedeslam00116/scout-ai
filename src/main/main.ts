@@ -8,7 +8,9 @@ import { ArtifactStore } from './artifactStore.ts';
 import { buildArtifactTool } from './agentHost.ts';
 import type { ProceedController } from './proceedGate.ts';
 import { scoutPaths } from './paths.ts';
-import type { ScoutSendTarget } from '../types/shared.ts';
+import { widenScope, DEFAULT_GRANT, type ProjectRules } from './permissionEngine.ts';
+import type { ProjectSettings } from './projectStore.ts';
+import type { ScoutPermissionAction, ScoutSendTarget } from '../types/shared.ts';
 
 let win: BrowserWindow | null = null;
 let host: AgentHost | null = null;
@@ -69,18 +71,39 @@ app.whenReady().then(async () => {
     return [tool];
   };
 
-  function findProjectBySessionDir(sessionDir: string): { id: string; reviewPolicy: 'always-proceed' | 'agent-decides' | 'request-review' } | null {
+  function findProjectBySessionDir(sessionDir: string): { id: string; reviewPolicy: 'always-proceed' | 'agent-decides' | 'request-review'; settings: ProjectSettings | null } | null {
     for (const view of projects?.list() ?? []) {
       if (paths.projectSessions(view.id) === sessionDir) {
         const policy = view.settings?.reviewPolicy ?? 'request-review';
         return {
           id: view.id,
           reviewPolicy: policy as 'always-proceed' | 'agent-decides' | 'request-review',
+          settings: view.settings ?? null,
         };
       }
     }
     return null;
   }
+
+  /**
+   * Permission rules per send target (T04, decision #13): projects read their
+   * security block from project.json; scratch holds an in-memory grant that
+   * scope widening mutates for the session (scratch has no project.json).
+   */
+  let scratchRules: ProjectRules = { ...DEFAULT_GRANT };
+  const permissionRulesProvider = (target: { cwd: string; sessionDir?: string }): ProjectRules => {
+    if (!projects || target.sessionDir === paths.scratchSessions) return scratchRules;
+    const match = findProjectBySessionDir(target.sessionDir ?? '');
+    if (!match?.settings) return scratchRules;
+    const sec = match.settings.security;
+    return {
+      preset: sec.preset,
+      allowDomains: sec.allowDomains,
+      denyDomains: sec.denyDomains,
+      commandPolicy: sec.commandPolicy,
+      mcpAllow: match.settings.mcp.enabledServers,
+    };
+  };
 
   host = new AgentHost(
     {
@@ -94,6 +117,7 @@ app.whenReady().then(async () => {
       // Scratch-first (decision #16 §7): sends without a target land in the
       // scratch conversation context.
       scratch: { cwd: paths.scratchHome, sessionDir: paths.scratchSessions },
+      permissionRules: permissionRulesProvider,
     },
   );
   projects = new ProjectService(paths, host);
@@ -174,6 +198,47 @@ app.whenReady().then(async () => {
       win.webContents.send('scout:event', { type: 'artifact_updated', id: artifactId, version: 0, status: 'review' });
     }
   });
+
+  // Permissions (T04, decision #13): resolve a held permission card.
+  ipcMain.handle('scout:permissions:resolve', (_e, id: string, verdict: 'allow' | 'deny') => {
+    host?.resolvePermission(id, verdict);
+  });
+
+  // Scope widening from the permission card's editor: mutate rules and persist
+  // for projects (scratch keeps its in-memory grant). Returns the new rules.
+  ipcMain.handle(
+    'scout:permissions:scope',
+    (_e, target: ScoutSendTarget | null, action: ScoutPermissionAction, scope: 'domain' | 'wildcard' | 'server') => {
+      const isScratch = !target || target.kind === 'scratch';
+      if (isScratch) {
+        scratchRules = widenScope(scratchRules, action, scope);
+        return scratchRules;
+      }
+      if (target.kind === 'project' && projects) {
+        const view = projects.list().find((p) => p.id === target.projectId);
+        if (view?.settings) {
+          const sec = view.settings.security;
+          const widened = widenScope(
+            {
+              preset: sec.preset,
+              allowDomains: sec.allowDomains,
+              denyDomains: sec.denyDomains,
+              commandPolicy: sec.commandPolicy,
+              mcpAllow: view.settings.mcp.enabledServers,
+            },
+            action,
+            scope,
+          );
+          projects.patchSettings(target.projectId, {
+            security: { allowDomains: widened.allowDomains, commandPolicy: widened.commandPolicy },
+            mcp: { enabledServers: widened.mcpAllow },
+          });
+          return widened;
+        }
+      }
+      return scratchRules;
+    },
+  );
   createWindow();
 
   app.on('activate', () => {

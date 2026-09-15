@@ -40,4 +40,10 @@ contextBridge.exposeInMainWorld('scout', {
     ipcRenderer.invoke('scout:artifacts:approve', artifactId, comment),
   artifactsComment: (artifactId: string, text: string, steerText?: string) =>
     ipcRenderer.invoke('scout:artifacts:comment', artifactId, text, steerText),
+
+  // Permissions (T04)
+  resolvePermission: (id: string, verdict: 'allow' | 'deny') =>
+    ipcRenderer.invoke('scout:permissions:resolve', id, verdict),
+  widenPermissionScope: (target: unknown, action: unknown, scope: 'domain' | 'wildcard' | 'server') =>
+    ipcRenderer.invoke('scout:permissions:scope', target, action, scope),
 });

@@ -59,4 +59,11 @@ describe('scout IPC contract', () => {
       assert.ok(handled.has(channel), `main missing ${channel}`);
     }
   });
+
+  it('permissions channels exist (T04, decision #13)', () => {
+    for (const channel of ['scout:permissions:resolve']) {
+      assert.ok(invoked.has(channel), `preload missing ${channel}`);
+      assert.ok(handled.has(channel), `main missing ${channel}`);
+    }
+  });
 });

@@ -3,6 +3,15 @@ import { test } from 'node:test';
 
 import { AgentHost, type PiLikeSession, type ScoutAgentEvent } from '../src/main/agentHost.ts';
 import type { ProceedController } from '../src/main/proceedGate.ts';
+import { DEFAULT_GRANT, type ProjectRules } from '../src/main/permissionEngine.ts';
+
+/** Fake pi session exposing the mutable `agent.beforeToolCall` hook (T04). */
+function fakeSessionWithAgent(script: (emit: (e: unknown) => void) => Promise<void>): PiLikeSession {
+  const base = fakeSession(script) as PiLikeSession & { agent?: { beforeToolCall?: unknown } };
+  const agent: { beforeToolCall?: (ctx: unknown, signal?: AbortSignal) => Promise<unknown> } = {};
+  (base as { agent?: unknown }).agent = agent;
+  return base;
+}
 
 /** Fake pi session: replays a scripted event stream when prompted. */
 function fakeSession(script: (emit: (e: unknown) => void) => Promise<void>): PiLikeSession {
@@ -265,4 +274,138 @@ test('listConversations sorts by modified desc and maps to summaries', async () 
   assert.equal(convos[0]?.id, 'b'); // newest first
   assert.equal(convos[0]?.name, 'Named');
   assert.equal(convos[1]?.firstMessage, 'old');
+});
+
+import { describe, it } from 'node:test';
+import type { ProjectRules as RulesForGate } from '../src/main/permissionEngine.ts';
+
+describe('permission gate (T04, decision #13)', () => {
+  /** Fake pi session whose prompt() invokes agent.beforeToolCall like pi does. */
+  function gateSession(): PiLikeSession {
+    const listeners = new Set<(e: unknown) => void>();
+    const agent: { beforeToolCall?: (ctx: unknown) => Promise<unknown> } = {};
+    return {
+      subscribe(listener: (e: unknown) => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async prompt() {
+        // Mimic pi: before executing a tool, call the host's beforeToolCall.
+        const result = await agent.beforeToolCall?.({
+          toolCall: { id: 't1', name: 'fetch_content' },
+          args: { url: 'https://example.com/docs' },
+        });
+        listeners.forEach((l) =>
+          l({
+            type: 'tool_execution_start',
+            toolCallId: 't1',
+            toolName: 'fetch_content',
+            args: { url: 'https://example.com/docs' },
+          }),
+        );
+        if (result && typeof result === 'object' && (result as { block?: boolean }).block) {
+          listeners.forEach((l) =>
+            l({
+              type: 'tool_execution_end',
+              toolCallId: 't1',
+              toolName: 'fetch_content',
+              result: { blocked: true },
+              isError: true,
+            }),
+          );
+        } else {
+          listeners.forEach((l) =>
+            l({
+              type: 'tool_execution_end',
+              toolCallId: 't1',
+              toolName: 'fetch_content',
+              result: { results: [1] },
+              isError: false,
+            }),
+          );
+        }
+        listeners.forEach((l) => l({ type: 'agent_end', messages: [], willRetry: false }));
+      },
+      async abort() {},
+      get isStreaming() {
+        return false;
+      },
+      agent,
+    } as unknown as PiLikeSession;
+  }
+  function makeRules(rules: RulesForGate) {
+    const events: ScoutAgentEvent[] = [];
+    const host = new AgentHost(
+      { emit: (_c, e) => events.push(e) },
+      async () => gateSession(),
+      { scratch: { cwd: 'C', sessionDir: 'S' }, permissionRules: () => rules },
+    );
+    return { host, events };
+  }
+
+  function waitForEvent(events: ScoutAgentEvent[], type: string): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        if (events.some((e) => e.type === type)) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 5);
+    });
+  }
+
+  it('ask holds the tool call until approved, then the run proceeds', async () => {
+    const { host, events } = makeRules(DEFAULT_GRANT); // default preset: fetch asks
+    const running = host.send('fetch the docs');
+    await waitForEvent(events, 'permission_request');
+
+    // The tool call must be held: still busy, second send rejected.
+    assert.equal(host.snapshot().busy, true);
+    await assert.rejects(() => host.send('another'), /busy/);
+
+    const request = events.find((e) => e.type === 'permission_request') as Extract<
+      ScoutAgentEvent,
+      { type: 'permission_request' }
+    >;
+    assert.equal(request.tool, 'fetch_content');
+    assert.deepEqual(request.action, { kind: 'fetch', domain: 'example.com' });
+
+    // Approve through the host's resolution surface.
+    const pending = (host as unknown as { pendingPermissions?: Map<string, { resolve: (v: 'allow' | 'deny') => void }> }).pendingPermissions;
+    assert.ok(pending && pending.size === 1, 'one pending permission');
+    for (const [, p] of pending) p.resolve('allow');
+
+    await running;
+    assert.equal(host.snapshot().busy, false);
+    assert.ok(events.some((e) => e.type === 'permission_resolved' && e.verdict === 'allow'));
+  });
+
+  it('deny blocks the tool without a request and reports Rejected', async () => {
+    const { host, events } = makeRules({ ...DEFAULT_GRANT, denyDomains: ['example.com'] });
+    await host.send('fetch denied');
+    assert.ok(!events.some((e) => e.type === 'permission_request'));
+    assert.ok(events.some((e) => e.type === 'permission_resolved' && e.verdict === 'deny'));
+    assert.equal(host.snapshot().busy, false);
+  });
+
+  it('abort rejects held permission gates', async () => {
+    const { host, events } = makeRules(DEFAULT_GRANT);
+    const running = host.send('fetch then nothing');
+    await waitForEvent(events, 'permission_request');
+
+    await host.abort();
+    await running;
+    assert.equal(host.snapshot().busy, false);
+    const resolved = events.filter((e) => e.type === 'permission_resolved');
+    assert.ok(resolved.some((e) => e.verdict === 'deny'));
+  });
+
+  it('allow-verdict tools run without any request', async () => {
+    const { host, events } = makeRules({ ...DEFAULT_GRANT, allowDomains: ['example.com'] });
+    await host.send('fetch allowed');
+    assert.ok(!events.some((e) => e.type === 'permission_request'));
+    // Auto-allows are silent (no permission_resolved) — the tool just ran.
+    const ran = events.find((e) => e.type === 'tool_result') as { ok?: boolean } | undefined;
+    assert.ok(ran && ran.ok, 'allowed tool executed');
+  });
 });

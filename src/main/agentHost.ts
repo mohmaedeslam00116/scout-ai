@@ -20,7 +20,13 @@
 import { mapSessionEvent } from './mapEvent.ts';
 import { runRegisterArtifact, shouldAwaitApproval } from './artifactTool.ts';
 import type { ArtifactToolDeps, RegisterArtifactArgs } from './artifactTool.ts';
-import type { ScoutAgentEvent, ScoutState } from '../types/shared.ts';
+import {
+  classifyAction,
+  evaluatePermission,
+  DEFAULT_GRANT,
+  type ProjectRules,
+} from './permissionEngine.ts';
+import type { ScoutAgentEvent, ScoutPermissionAction, ScoutState } from '../types/shared.ts';
 
 export type { ScoutAgentEvent, ScoutState };
 
@@ -79,6 +85,8 @@ export interface HostOptions {
   renamer?: SessionRenamer;
   /** Production only: extra pi tools per target (register_artifact). */
   tools?: ToolProvider;
+  /** Rules for the target being sent to (T04); scratch gets DEFAULT_GRANT. */
+  permissionRules?: (target: SendTarget) => ProjectRules;
 }
 
 export type SessionFactory = (target: SendTarget) => Promise<PiLikeSession>;
@@ -100,6 +108,8 @@ export class AgentHost {
   /** Resume file per target, set by restore() and consumed by sessionFor(). */
   private readonly resumeByTarget = new Map<string, string>();
   private sessionPromise: Promise<PiLikeSession> | null = null;
+  /** Pending permission requests (T04): id → resolution surface. */
+  private readonly pendingPermissions = new Map<string, { resolve: (verdict: 'allow' | 'deny') => void; request: PermissionRequestPayload }>();
 
   constructor(sink: HostSink, createSession: SessionFactory, options: HostOptions = {}) {
     this.sink = sink;
@@ -176,6 +186,7 @@ export class AgentHost {
     this.sessionPromise = (async () => {
       const resume = target.resume ?? this.resumeByTarget.get(key);
       const session = await this.createSession(resume ? { ...target, resume } : target);
+      this.installPermissionGate(session, target);
       const unsubscribe = session.subscribe((raw) => {
         for (const mapped of this.mapAndLog(raw)) this.sink.emit('scout:event', mapped);
       });
@@ -268,6 +279,7 @@ export class AgentHost {
   }
 
   async abort(): Promise<void> {
+    this.rejectPendingPermissions();
     if (this.sessionPromise) return; // still creating; nothing to abort yet
     for (const session of this.sessions.values()) {
       if (session.isStreaming) await session.abort();
@@ -281,8 +293,106 @@ export class AgentHost {
     this.sessions.clear();
   }
 
+  /**
+   * Permission gate (T04, decision #13): install pi's beforeToolCall hook so
+   * every tool call is classified and evaluated before it runs. 'ask' holds
+   * the awaited promise (the same continuation-hold as the artifact Proceed
+   * gate) until resolvePermission() speaks; 'deny' blocks with a reason. The
+   * hook lives on the session's public agent — one choke point covering pi's
+   * built-ins, extension tools, and Scout's own custom tools alike.
+   */
+  private installPermissionGate(session: PiLikeSession, target: SendTarget): void {
+    const agent = (session as { agent?: { beforeToolCall?: PermissionHook } }).agent;
+    if (!agent) return; // fake/test sessions without an agent surface
+    agent.beforeToolCall = async (ctx) => {
+      // Re-read rules per call: scope widening (and project settings edits)
+      // must reach the long-lived session's gate immediately.
+      const rules = this.options.permissionRules?.(target) ?? DEFAULT_GRANT;
+      const toolName = ctx.toolCall?.name ?? 'unknown';
+      const action = classifyAction(toolName, ctx.args);
+      const verdict = evaluatePermission(action, rules);
+      const id = `perm-${permissionSeq++}`;
+      if (verdict === 'allow') return undefined; // no request, no row
+      if (verdict === 'deny') {
+        this.sink.emit('scout:event', { type: 'permission_resolved', id, verdict: 'deny' });
+        return { block: true, reason: `Blocked by project security policy: ${describeAction(toolName, action)}` };
+      }
+      // 'ask' — hold the tool call until the human resolves it.
+      this.sink.emit('scout:event', {
+        type: 'permission_request',
+        id,
+        tool: toolName,
+        action,
+      });
+      const verdict2 = await new Promise<'allow' | 'deny'>((resolve) => {
+        this.pendingPermissions.set(id, { resolve, request: { id, tool: toolName, action } });
+      });
+      this.pendingPermissions.delete(id);
+      if (verdict2 === 'allow') {
+        this.sink.emit('scout:event', { type: 'permission_resolved', id, verdict: 'allow' });
+        return undefined; // proceed with the original args
+      }
+      this.sink.emit('scout:event', { type: 'permission_resolved', id, verdict: 'deny' });
+      return { block: true, reason: 'The user denied this action in Scout.' };
+    };
+  }
+
+  /**
+   * Resolve a pending permission request (scout:permissions:resolve IPC).
+   * Unknown ids resolve to deny — never silently allow.
+   */
+  resolvePermission(id: string, verdict: 'allow' | 'deny'): void {
+    const pending = this.pendingPermissions.get(id);
+    if (pending) {
+      pending.resolve(verdict);
+    } else {
+      this.sink.emit('scout:event', { type: 'permission_resolved', id, verdict: 'deny' });
+    }
+  }
+
+  /** Reject all held gates (Stop / abort) so no tool call hangs forever. */
+  private rejectPendingPermissions(): void {
+    for (const [id, pending] of this.pendingPermissions) {
+      pending.resolve('deny');
+      this.pendingPermissions.delete(id);
+    }
+  }
+
   protected log(kind: string, text: string): void {
     this.activity.push({ kind, text, ts: Date.now() });
+  }
+}
+
+/**
+ * Permission gate types (T04). The hook mirrors pi's beforeToolCall contract:
+ * return undefined to proceed, { block, reason } to block.
+ */
+interface PermissionRequestPayload {
+  id: string;
+  tool: string;
+  action: ScoutPermissionAction;
+}
+
+type PermissionHook = (
+  ctx: { toolCall?: { name?: string; id?: string }; args?: unknown },
+  signal?: AbortSignal,
+) => Promise<{ block?: boolean; reason?: string } | undefined>;
+
+let permissionSeq = 0;
+
+function describeAction(toolName: string, action: ScoutPermissionAction): string {
+  switch (action.kind) {
+    case 'fetch':
+    case 'read_url':
+      return action.domain ? `${toolName} on ${action.domain}` : toolName;
+    case 'command':
+      return action.wildcard ? `command with ${action.prefix} …` : `command ${action.prefix}`;
+    case 'mcp':
+      return action.tool ? `${action.server}/${action.tool}` : action.server;
+    case 'subagent':
+      return `subagent ${action.agent}`;
+    default:
+      return toolName;
   }
 }
 

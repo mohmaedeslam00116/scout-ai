@@ -8,6 +8,8 @@ import { ConversationsPane } from './components/ConversationsPane.js';
 import { ProjectsPane } from './components/ProjectsPane.js';
 import { ChatPane } from './components/ChatPane.js';
 import { ArtifactsPane } from './components/ArtifactsPane.js';
+import { PermissionsSection } from './components/PermissionCard.js';
+import { scopesFor, type PermissionRequest } from './permissions.js';
 import { FleetView } from './components/FleetView.js';
 
 export type ViewName = 'projects' | 'conversations' | 'artifacts' | 'fleet' | 'schedules' | 'settings';
@@ -86,6 +88,7 @@ export default function App() {
   const [model, setModel] = useState('gpt-5.2');
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [runs, setRuns] = useState<FleetRun[]>([]);
+  const [permissionRequests, setPermissionRequests] = useState<PermissionRequest[]>([]);
   const activityRef = useRef<HTMLDivElement | null>(null);
 
   const handleEvent = useCallback((event: ScoutAgentEvent) => {
@@ -155,6 +158,23 @@ export default function App() {
       case 'agent_end':
         setBusy(false);
         break;
+      case 'permission_request':
+        setPermissionRequests((prev) =>
+          prev.some((r) => r.id === event.id)
+            ? prev
+            : [...prev, { id: event.id, tool: event.tool, action: event.action, status: 'pending' as const, scopes: scopesFor(event.action) }],
+        );
+        break;
+      case 'permission_resolved':
+        // Resolved rows stay as the run's audit trail (Rejected included).
+        // Unknown ids still log — e.g. a deny that beat the request to the wire.
+        setPermissionRequests((prev) => {
+          const known = prev.some((r) => r.id === event.id);
+          const resolved = event.verdict === 'allow' ? ('allow' as const) : ('deny' as const);
+          if (known) return prev.map((r) => (r.id === event.id ? { ...r, status: resolved } : r));
+          return [...prev, { id: event.id, tool: 'blocked by policy', action: { kind: 'other' } as const, status: resolved, scopes: [] }];
+        });
+        break;
     }
   }, []);
 
@@ -200,6 +220,25 @@ export default function App() {
         setActiveId(convId);
         setBusy(true);
         setTimeout(() => setArtifacts((prev) => [...prev, demoArtifact()]), 600);
+        // Demo permission request (T04 parity): a fetch that needs approval.
+        setTimeout(
+          () =>
+            setPermissionRequests((prev) =>
+              prev.some((r) => r.id === 'demo-perm')
+                ? prev
+                : [
+                    ...prev,
+                    {
+                      id: 'demo-perm',
+                      tool: 'fetch_content',
+                      action: { kind: 'fetch' as const, domain: 'pi.dev' },
+                      status: 'pending' as const,
+                      scopes: scopesFor({ kind: 'fetch' as const, domain: 'pi.dev' }),
+                    },
+                  ],
+            ),
+          900,
+        );
         const runId = nextRunId();
         setRuns((prev) => [
           ...prev,
@@ -505,6 +544,37 @@ export default function App() {
     [bridge, activeGroup],
   );
 
+  /** Resolve a held permission card (real IPC; demo flips the row locally). */
+  const resolvePermission = useCallback(
+    (id: string, verdict: 'allow' | 'deny') => {
+      if (bridge?.resolvePermission) {
+        bridge.resolvePermission(id, verdict).catch(() => {});
+      }
+      // Optimistic flip; host echoes permission_resolved either way.
+      setPermissionRequests((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, status: verdict === 'allow' ? ('allow' as const) : ('deny' as const) } : r)),
+      );
+    },
+    [bridge],
+  );
+
+  /** Scope widening from the card: persist (project) or mutate (scratch/demo). */
+  const widenPermission = useCallback(
+    (request: PermissionRequest, scope: 'domain' | 'wildcard' | 'server') => {
+      const target = activeGroup === 'scratch' ? { kind: 'scratch' as const } : { kind: 'project' as const, projectId: activeGroup };
+      if (bridge?.widenPermissionScope) {
+        bridge
+          .widenPermissionScope(target, request.action, scope)
+          .then(() => resolvePermission(request.id, 'allow'))
+          .catch(() => {});
+        return;
+      }
+      // Demo mode: widening just allows (no rules store to mutate).
+      resolvePermission(request.id, 'allow');
+    },
+    [bridge, activeGroup, resolvePermission],
+  );
+
   const openTranscript = useCallback(
     (id: string) => {
       const run = runs.find((r) => r.id === id);
@@ -537,6 +607,7 @@ export default function App() {
   return (
     <div className="flex h-full">
       <NavRail active={view} onSelect={setView} onNewConversation={newConversation} />
+      <PermissionsSection requests={permissionRequests} onResolve={resolvePermission} onWiden={widenPermission} />
       {view === 'projects' ? (
         <ProjectsPane
           projects={projects}
